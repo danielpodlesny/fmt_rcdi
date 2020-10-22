@@ -1,0 +1,1067 @@
+---
+title: "Publication Figure 6"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_depth: 2
+    toc_float: true
+    toc_collapsed: false
+theme: cosmo
+---
+
+
+# Libraries
+Standard Import
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(scales)
+library(ggpubr)
+```
+
+Special
+```{r}
+# devtools::install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+# library(rgr)
+# library(mixOmics)
+library(pairwiseAdonis)
+library(grid)
+library(factoextra)
+library(FactoMineR)
+```
+
+# Paths
+```{r}
+bin_dir = '../bin/'
+data_dir = '../data/'
+results_dir = '../results/'
+```
+
+# Custom Scripts / Theme
+```{r}
+source(paste0(bin_dir, 'theme_settings.R'))
+source (paste0(bin_dir, 'utilities.R'))
+source(paste0(bin_dir, 'species_competition_functions.R'))
+source(paste0(bin_dir, 'distmat_utils.R'))
+source(paste0(bin_dir, 'analysis_metadata.R'))
+date <- format(Sys.time(), "%d%m%y")
+```
+
+# Import Tables
+Metadata
+```{r message=FALSE, warning=FALSE}
+samples.metadata <- read_tsv(paste0(data_dir, 'samples.metadata.tsv'))
+microbe.taxonomy <- read_tsv(paste0(data_dir, 'microbe.taxonomy.tsv'))
+microbe.metadata <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'microbe.metadata.tsv'))) %>% 
+  mutate(gram.bool = ifelse(gram_stain == 'positive', T, 
+                     ifelse(gram_stain == 'negative', F, NA)), 
+         spores.bool = ifelse(spore_forming == 'spore-forming', T, 
+                       ifelse(spore_forming == 'non-spore-forming', F, NA))) 
+
+```
+
+## Taxonomy
+MetaPhlAn2 tables
+combine with taxonomy
+```{r message=FALSE, warning=FALSE}
+mp_species.long <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'samples.mp_profiles.species.tsv')), 
+             by = 'species') %>% 
+  left_join(., samples.metadata, by = 'Name')
+```
+
+rCDI subset
+annotate with metadata
+```{r}
+mp_species.rcdi.long <- 
+  mp_species.long %>%
+  filter(Study %in% c(rcdi.studies)) 
+```
+
+## Case Summary
+SameStr Case-Summary table
+```{r message=FALSE, warning=FALSE}
+sstr_cases <- read_tsv(paste0(data_dir, 'samples.case_summary.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+# Set Figure
+```{r}
+fig = paste0('Fig_6.')
+```
+
+# Failed/Resolved Symptoms
+Focussing on the difference between successful FMT cases and cases in which symptoms were reported to no have been resolved after FMT treatment.
+
+## %Recipient/Donor-derived
+### Format Data
+```{r fig.width=5, fig.height=5, message=FALSE, warning=FALSE, paged.print=FALSE}
+sstr_cases.rcdi.metrics <-
+  sstr_cases %>% 
+  
+  filter(Study %in% c('ALM', 'FRICKE')) %>% 
+  filter(Case_Name %in% cases.full) %>% 
+
+  tag_species_competition(.) %>% 
+
+  mutate(n = 1) %>% 
+  mutate(source = ifelse(grepl(species, pattern = 'unclassified'),  'Unclassified', source)) %>% 
+  
+  mutate(source = case_when(
+  analysis_level == 'species' & source == 'self' ~ 'Self Sp.',
+  analysis_level == 'species' & source == 'donor' ~ 'Donor Sp.',
+  analysis_level == 'species' & source == 'unique' ~ 'Unique Sp.',
+  T ~ source
+  )) %>% 
+  
+  group_by(Study_Type, Case_Name, source, Days_Since_FMT.post, fmt_success.label) %>% 
+  summarize(n = sum(n, na.rm = T),
+            rel_abund = sum(rel_abund.post, na.rm = T) / 100) %>% 
+  group_by(Case_Name, Days_Since_FMT.post) %>% 
+  mutate(f = n / sum(n, na.rm = T)) %>%
+  ungroup() %>% 
+
+  group_by(Case_Name) %>% 
+  mutate(source = case_when(source == 'Unclassified' ~ 'Unclassified Sp.',
+                  source == 'same_species' ~ 'Same Sp.', 
+                  source == 'unique' ~ 'Unique to Time Point',
+                  source == 'self' ~ 'Recipient / Initial Sample',
+                  source == 'donor' ~ 'Donor',
+                  source == 'both' ~ 'Coexistence', 
+                  T ~ source)) %>% 
+  
+  pivot_wider(names_from = 'source', 
+               values_from = c('rel_abund','f', 'n'), names_sep = '___') %>% 
+  mutate_at(.vars = vars(contains('___')),
+            .funs = funs(replace_na(., 0))) %>%
+  pivot_longer(cols = contains("___"), 
+               names_to = c("metric", "source"),
+               names_sep = '___', values_drop_na = F) %>% 
+  mutate(fmt_success.label = ifelse(fmt_success.label == 'Failed', 
+                                    'Unresolved Symptoms', 'Resolved Symptoms'))
+```
+
+```{r}
+sstr_cases.rcdi.rel_abund.annotated <-
+  sstr_cases.rcdi.metrics %>% 
+  filter(metric == 'rel_abund') %>% 
+  filter(Days_Since_FMT.post <= 37) %>% 
+  
+  # keep only recipient and donor-derived (excluding coexistence)
+  mutate(
+    source.simple = case_when(
+           source %in% c('Recipient / Initial Sample','Self Sp.') ~ 'Recipient',
+           source %in% c('Donor','Donor Sp.') ~ 'Donor',
+           T ~ 'Drop'
+         )) %>% 
+  filter(source.simple != 'Drop') %>% 
+  
+  group_by(Case_Name, Days_Since_FMT.post, source.simple, fmt_success.label) %>% 
+  summarize(value = sum(value, na.rm = T)) %>% 
+  ungroup() 
+```
+
+
+### Scatterplot over time
+Fraction of donor and recipient-derived species over time for failed and resolved cases
+```{r fig.width=6, fig.height=3}
+plot <-
+  sstr_cases.rcdi.rel_abund.annotated %>% 
+
+  
+  ggplot(aes(Days_Since_FMT.post, value)) +
+  geom_point(aes(fill = source.simple), alpha = 0.5, 
+             shape = 21, size = 3, col = 'black') + 
+  geom_line(aes(col = source.simple, 
+                group = paste0(Case_Name, source.simple)
+                ), show.legend = F, alpha = 0.5) +
+  geom_smooth(se = F, method = 'glm', aes(col = source.simple),
+              method.args=list(family='binomial')) +
+  geom_hline(yintercept = 0.25, linetype = 'dashed', size = .5) + 
+
+  scale_color_manual(values = colors.discrete[c(1,3)]) + 
+  scale_fill_manual(values = colors.discrete[c(1,3)]) + 
+  scale_y_continuous(labels = percent_format_signif, 
+                     breaks = c(0, .25, .5, .75, 1), 
+                     limits = c(0, 1), expand = c(0,0)) +
+  scale_x_continuous(trans = pseudo_log_trans(0.5, 10), 
+                     breaks = c(2, 7, 14, 35, 84, 365)) + 
+  facet_grid(cols = vars(fmt_success.label)) + 
+  theme_cowplot() +
+  theme(axis.title.x = element_blank(),
+        axis.line = element_line(size = 0.2, color = 'black'), 
+        strip.text.x = element_text(size = 14),
+        strip.background = element_blank()) + 
+  panel_border(remove = F, size = 1, color = 'black') +
+  labs(y = 'Post-FMT Sample\nRel. Abund. by Source') +
+  guides(fill = guide_legend(title = 'Post-FMT\nMicrobiota Source', ncol = 1))
+
+plot + theme(legend.position = 'none')
+legend = cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+Exporting plot
+```{r}
+output_name = 'PostSource.Cases.Time.rCDI'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 6, height = 3,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 3, height = 3,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+
+Persistence / Engraftment within time periods:
+```{r}
+sstr_cases.rcdi.rel_abund.annotated %>% 
+  filter(Days_Since_FMT.post > 0, Days_Since_FMT.post <= 7) %>% 
+  group_by(source.simple, fmt_success.label) %>% 
+  summarize(mean = mean(value) * 100, 
+            sd = sd(value) * 100, 
+            .groups = 'drop')
+
+sstr_cases.rcdi.rel_abund.annotated %>% 
+  filter(Days_Since_FMT.post > 7, Days_Since_FMT.post <= 37) %>% 
+  group_by(source.simple, fmt_success.label) %>% 
+  summarize(mean = mean(value) * 100, 
+            sd = sd(value) * 100, 
+            .groups = 'drop')
+```
+Resolved:
+Donor -> 44.8 ± 30.1  to  52.0 ± 23.6
+Recipient -> 20.9 ± 24.9  to  12.5 ± 17.0
+
+Failed:
+Donor -> 33.1 ± 23.5  to  24.3 ± 8.7
+Recipient -> 25.2 ± 19.0  to  40.1 ± 24.3
+
+### Boxplot
+Boxplots at <=1W, 1-6W, >6W
+```{r}
+sstr_cases.rcdi.metrics %>% 
+  filter(metric == 'rel_abund') %>% 
+  mutate(Days_Since_fmt_success.label = case_when(
+    Days_Since_FMT.post <7 ~ '<1W', 
+    Days_Since_FMT.post >=7 & Days_Since_FMT.post <= 42 ~ '1-6W',
+    Days_Since_FMT.post > 42 ~ '>6W')) %>% 
+
+  # keep only recipient and donor-derived (excluding coexistence)
+  mutate(
+    source.simple = case_when(
+           source %in% c('Recipient / Initial Sample','Self Sp.') ~ 'Recipient',
+           source %in% c('Donor','Donor Sp.') ~ 'Donor',
+           
+           T ~ 'Drop'
+         )) %>% 
+  filter(source.simple != 'Drop') %>% 
+  
+  group_by(Case_Name, Days_Since_FMT.post, Days_Since_fmt_success.label, source.simple, fmt_success.label) %>% 
+  summarize(value = sum(value, na.rm = T)) %>% 
+  ungroup() %>% 
+  
+  mutate(Days_Since_fmt_success.label = fct_relevel(Days_Since_fmt_success.label, '<1W', '1-6W', '>6W')) %>% 
+  
+  ggplot(aes(Days_Since_fmt_success.label, value, fill = source.simple)) + 
+  geom_boxplot() +
+  scale_y_continuous(labels = percent_format_signif) +
+  facet_grid(cols = vars(gsub(fmt_success.label, pattern = ' ', replacement = '\n')), 
+             space = 'free', scales = 'free_x') + 
+  theme_cowplot() + 
+  theme(axis.title.x = element_blank(),
+        strip.background = element_blank()) + 
+  scale_fill_manual(values = colors.discrete[c(1,3)]) + 
+  labs(y = 'Cumulative\nSample Rel. Abund.') + 
+  guides(fill = guide_legend(title = 'Post-FMT\nMicrobiota Source', ncol = 2))
+```
+
+## Diversity Differences
+### Alpha: Shannon
+#### Format
+```{r}
+# transpose
+mp_species.wide <- mp_species.long %>%
+  filter(kingdom == 'Bacteria',
+         Study_Type == 'rCDI') %>% 
+  pivot_wider(id_cols = 'species', 
+              names_from = 'Name',
+              values_from = 'rel_abund', 
+              values_fill = list(rel_abund = 0))
+
+# alpha diversity
+mp_species.samples <- t(select(mp_species.wide, matches('.pair'), species) %>% column_to_rownames(var = 'species'))
+mp_species.shannon <- data.frame(Shannon = diversity(mp_species.samples, index = 'shannon')) %>% rownames_to_column('Name') %>% 
+left_join(., samples.metadata, by = 'Name')
+```
+
+#### Boxplots
+Shannon Index of rCDI and Control data showing that cases in which FMT failed to resolve clinical symptoms can not be distinguished by controls, successfully treated patients or donors in terms of Shannon Index. Index is significantly lower in pre-FMT samples. 
+Since MGH03D-Donor (only donor with failed cases) on higher end of Shannon Index, alpha diversity probably not a very relevant indicator for choosing donors.
+```{r fig.width=2, fig.height=2.5}
+  
+ww = 0.5
+plot <-
+  mp_species.shannon %>% 
+  filter(!is.na(Sample_Type)) %>% 
+  # filter(last_sample) %>% 
+  
+  mutate(Sample_Type.label = str_to_upper(unlist(str_extract(Sample_Type, '.')))) %>% 
+  mutate(tag = case_when(
+    Donor.Subject != 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' ~ Sample_Type.label,
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & 
+      (Sample_Type == 'donor' | (Sample_Type == 'post' & !fmt_success)) ~ paste0(Sample_Type.label, '*'),
+    T ~ Sample_Type.label
+  )) %>% 
+  mutate(tag = fct_relevel(tag, 'R', 'P', 'D', 'P*', 'D*')) %>% 
+  # filter(tag != 'R') %>% 
+  
+  ggplot(aes(tag, Shannon)) + 
+  stat_boxplot(geom = 'errorbar', width = ww) +
+  geom_boxplot(show.legend = F, width = ww) + 
+  geom_dotplot(aes(fill = NULL), binaxis = "y", 
+               stackdir = "center", binpositions="all", binwidth = 0.05) +
+  
+  theme_cowplot() + 
+  theme(axis.title.x = element_blank()) + 
+  labs(y = 'Shannon Index') + 
+  annotate('text', label = '*Unresolved\nSymptoms', y = 0.45, x = 'D*', hjust = 1) # + 
+  # stat_compare_means(method = 'kruskal')
+
+plot
+```
+
+Exporting plot
+```{r}
+output_name = 'TaxonomicDiversity.Shannon'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 2, height = 2.5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+### Beta: PCA of species-level taxonomic composition
+PCA of clr-transformed taxonomic composition
+
+#### Diversity Calculations
+```{r}
+# transpose
+mp_species.rcdi.wide <- mp_species.rcdi.long %>%
+  filter(kingdom == 'Bacteria') %>%
+  pivot_wider(id_cols = 'species', 
+              names_from = 'Name',
+              values_from = 'rel_abund', 
+              values_fill = list(rel_abund = 0))
+
+## -- genus-level
+mp_genus.rcdi.wide <- mp_species.rcdi.long %>%
+  filter(kingdom == 'Bacteria') %>% 
+  pivot_wider(id_cols = 'genus', 
+              names_from = 'Name',
+              values_from = 'rel_abund', 
+              values_fill = list(rel_abund = 0), 
+              values_fn = list(rel_abund = sum))
+
+# get data
+mp_species.rcdi.data <- t(select(mp_species.rcdi.wide, 
+                                    matches('.pair'), species) %>% 
+                               column_to_rownames(var = 'species'))
+
+## -- genus
+mp_genus.rcdi.data <- t(select(mp_genus.rcdi.wide, 
+                                    matches('.pair'), genus) %>% 
+                               column_to_rownames(var = 'genus'))
+
+# species-level
+pseudo = 1e-6
+mp_species.rcdi.clr <- rgr::clr(mp_species.rcdi.data + pseudo,  ifclose = FALSE, ifwarn = TRUE)
+
+# aitchison dist
+mp_species.rcdi.clr.dist <- dist(scale(mp_species.rcdi.clr, center = T, scale = F), 
+                                 method = 'euclidean') %>% as.matrix()
+
+# pca
+mp_species.rcdi.clr.pca_data <- PCA(mp_species.rcdi.clr, graph = FALSE, scale.unit = F)
+mp_species.rcdi.clr.pca <- mp_species.rcdi.clr.pca_data %>% 
+  .$ind %>% .$coord %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = 'Name') 
+
+## annotate with metadata, diversity
+mp_species.rcdi.data.clr.pca <- mp_species.rcdi.clr.pca %>% 
+  left_join(., samples.metadata, by = c('Name')) %>% 
+  left_join(., mp_species.shannon %>% select(Name, Shannon), by = c('Name')) %>% 
+  group_by(Case_Name, Sample_Type) %>% 
+  mutate(last = dense_rank(Days_Since_FMT) == max(dense_rank(Days_Since_FMT))) %>% 
+  mutate(d3.tag = case_when(
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'post' ~ 
+      paste0('post | D3 ', if_else(fmt_success, 'Success', 'Failed')),
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'donor' ~ 'donor | D3',
+    T ~ Sample_Type)) %>% 
+  ungroup()
+```
+
+#### D/P Difference
+PERMANOVA (adonis function) testing between rCDI Donors & Post-FMT: MGH03D with failed cases (3 samples) and other donors.
+```{r}
+# donor & post-FMT
+selection <- mp_species.rcdi.long %>% 
+  filter(Sample_Type %in% c('post', 'donor'), last_sample) %>% 
+  distinct(Name, Donor.Subject, Sample_Type, fmt_success)
+
+d3.adonis <-
+  pairwiseAdonis::pairwise.adonis(
+  x = mp_species.rcdi.clr[selection$Name, ],
+  factors = ifelse(selection$Donor.Subject == "D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21", 'MGH03D-related','Other'),
+  sim.method = 'euclidean',
+  perm = 1e3) %>% 
+  rename(fdr = p.adjusted) %>% 
+  mutate(sig = cut(fdr, 
+                   breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                   labels = c("***", "**", "*", "ns")))
+
+d3.adonis
+```
+
+#### PCA biplot
+
+##### Format
+Abbr. species names in PCA object
+```{r}
+select.prevotella <- c('Prevotella_denticola', 'Prevotella_oris', 'Prevotella_oralis','Prevotella_veroralis')
+select.fusobacteria <- c('Fusobacterium_nucleatum', 'Fusobacterium_periodonticum', 'Fusobacterium_mortiferum')
+other <-  c('Rothia_dentocariosa', 'Veilonella_parvula')
+
+select.bacteroides <- c('Bacteroides_faecis', 'Bacteroides_eggerthii', 'Bacteroides_intestinalis', 'Bacteroides_thetaiotaomicron') 
+# 'Bacteroides_fragilis',
+select.ruminococcus <- c('Ruminococcus_torques', 'Ruminococcus_gnavus')
+# 'Ruminococcus_albus', 'Ruminococcus_callidus', 'Bacteroides_obeum'
+
+plot_spp <- c(other, select.bacteroides, select.ruminococcus, select.prevotella, select.fusobacteria,
+               'Lachnospiraceae_bacterium')
+
+print_taxonomy <- function(name, selection) {
+  unlist(
+    lapply(name, function(x) {
+      case_when(
+        !x %in% selection ~ x,
+        x %in% selection ~ str_replace(str_replace(x, '_', ' '), '[a-z].*\ ', '. ')
+      )
+    }
+    )) %>% 
+    return()
+}
+
+rownames(mp_species.rcdi.clr.pca_data$var$coord) <- print_taxonomy(rownames(mp_species.rcdi.clr.pca_data$var$coord), plot_spp)
+rownames(mp_species.rcdi.clr.pca_data$var$cor) <- print_taxonomy(rownames(mp_species.rcdi.clr.pca_data$var$cor), plot_spp)
+rownames(mp_species.rcdi.clr.pca_data$var$cos) <- print_taxonomy(rownames(mp_species.rcdi.clr.pca_data$var$cos), plot_spp)
+rownames(mp_species.rcdi.clr.pca_data$var$contrib) <- print_taxonomy(rownames(mp_species.rcdi.clr.pca_data$var$contrib), plot_spp)
+```
+
+```{r}
+# https://stackoverflow.com/questions/13407236/remove-a-layer-from-a-ggplot2-chart
+remove_geom <- function(ggplot2_object, geom_type) {
+  # Delete layers that match the requested type.
+  layers <- lapply(ggplot2_object$layers, function(x) {
+    if (class(x$geom)[1] == geom_type) {
+      NULL
+    } else {
+      x
+    }
+  })
+  # Delete the unwanted layers.
+  layers <- layers[!sapply(layers, is.null)]
+  ggplot2_object$layers <- layers
+  ggplot2_object
+}
+```
+
+```{r fig.height=5,fig.weigth=5}
+pp <-
+  factoextra::fviz_pca_biplot(mp_species.rcdi.clr.pca_data, 
+             # samples
+             fill.ind = mp_species.rcdi.data.clr.pca$d3.tag, 
+             pointshape = 21, 
+             pointsize = 8, 
+             alpha.ind = ifelse(grepl(mp_species.rcdi.data.clr.pca$d3.tag, pattern = 'D3'), 1, .25),
+             
+             # features
+             select.var = list('name' = print_taxonomy(plot_spp, plot_spp)),
+             label = 'var', labelsize = 3, 
+             col.var = 'black',  
+             repel = T, invisible = c("quali"), 
+             
+             # general
+             addEllipses = F, centroids = F, scale = F,
+             title = '',
+             subtitle = 'Taxonomic Composition',
+             )  + 
+
+  ggpubr::fill_palette(palette = c(colors.discrete[c(1,1,2)], 
+                                   '#B4907E',  #A47963
+                                   colors.discrete[c(2,3)])) +
+  scale_x_reverse() + 
+  scale_y_reverse() +
+  theme_cowplot() + 
+  theme(aspect.ratio = 1,
+        plot.subtitle = element_text(hjust = .5, size = 12), 
+        axis.title = element_text(size = 10),
+        axis.text = element_text(size = 8),
+)  + 
+  coord_flip()
+
+# axes - rename
+pp$labels$x <- str_replace(pp$labels$x, pattern = 'Dim', replacement = 'PC ')
+pp$labels$y <- str_replace(pp$labels$y, pattern = 'Dim', replacement = 'PC ')
+
+# arrows - rescale
+pp[["layers"]][[5]][["data"]][["x"]] = pp[["layers"]][[5]][["data"]][["x"]]  *.4
+pp[["layers"]][[5]][["data"]][["y"]] = pp[["layers"]][[5]][["data"]][["y"]]  *.4
+
+# labels
+pp[["layers"]][[4]][["data"]][["x"]] = pp[["layers"]][[4]][["data"]][["x"]]  *.4
+pp[["layers"]][[4]][["data"]][["y"]] = pp[["layers"]][[4]][["data"]][["y"]]  *.4
+
+# crosshair
+pp <- remove_geom(pp, 'GeomHline')
+pp <- remove_geom(pp, 'GeomVline')
+
+pp <- pp +
+  annotate('text', x = -52, y = 52, hjust = 0, vjust = 1, size = 3, 
+           label = paste0('PERMANOVA (Post-FMT & Donors)\n', 
+                         'MGH03D-related vs. Others\n')) + 
+  annotate('text', x = -41.5, y = 52, hjust = 0, vjust = 1, size = 3,
+           label = bquote(R^2 * '=' *  .(format(100*d3.adonis$R2,digits=3))*'%' * .(format(d3.adonis$sig))))
+
+legend <- cowplot::get_legend(pp)
+
+pp + theme(legend.position = 'none')
+grid.newpage()
+grid.draw(legend)
+```
+
+
+Exporting plot
+```{r}
+output_name = 'TaxonomicDiversity.rCDI.CLR_PCAbiplot'
+
+ggsave(pp + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 5, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 5, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+#### Donor Difference
+```{r}
+# donor only
+donors <- mp_species.rcdi.long %>% 
+  filter(Sample_Type %in% c('donor')) %>% 
+  distinct(Name, Donor.Subject)
+
+selection <- donors %>% 
+  pull(Name)
+
+mp_species.rcdi.clr.pca_data <- PCA(mp_species.rcdi.clr[selection, ], graph = FALSE, scale.unit = F)
+
+# get data
+mp_species.rcdi.data <- t(select(mp_species.rcdi.wide, 
+                                    matches('.pair'), species) %>% 
+                               column_to_rownames(var = 'species'))
+
+# species-level
+pseudo = 1e-6
+mp_species.rcdi.donors.data <- mp_species.rcdi.data[selection, colSums(mp_species.rcdi.data[selection,]) > 0]
+mp_species.rcdi.donors.clr <- rgr::clr(mp_species.rcdi.donors.data + pseudo,  ifclose = FALSE, ifwarn = TRUE)
+
+# PCA
+mp_species.rcdi.donors.clr.pca_data <- PCA(mp_species.rcdi.donors.clr, graph = FALSE, scale.unit = F, ncp = 2)
+mp_species.rcdi.donors.clr.pca <- mp_species.rcdi.donors.clr.pca_data %>% 
+  .$ind %>% .$coord %>% 
+  as.data.frame()
+mp_species.rcdi.donors.clr.expl <- mp_species.rcdi.donors.clr.pca_data$eig[1:2,'percentage of variance'] / 100
+
+
+## annotate with metadata, diversity
+mp_species.rcdi.donors.data.clr.pca <- mp_species.rcdi.donors.clr.pca %>% 
+  rownames_to_column('Name') %>% 
+  left_join(., samples.metadata, by = c('Name')) %>% 
+  left_join(., mp_species.shannon %>% select(Name, Shannon), by = c('Name')) %>% 
+  group_by(Case_Name, Sample_Type) %>% 
+  mutate(last = dense_rank(Days_Since_FMT) == max(dense_rank(Days_Since_FMT))) %>% 
+  mutate(d3.tag = case_when(
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'post' ~ 
+      paste0('post | D3 ', if_else(fmt_success, 'Success', 'Failed')),
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'donor' ~ 'donor | D3',
+    T ~ Sample_Type)) %>% 
+  ungroup()
+```
+
+Pairwise PERMANOVA (adonis function) testing between rCDI Donors: MGH03D with failed cases (3 samples) and other donors.
+```{r}
+d3.adonis <-
+  pairwiseAdonis::pairwise.adonis(
+  x = mp_species.rcdi.clr[donors$Name, ],
+  factors = ifelse(donors$Donor.Subject == "D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21", 'MGH03D','Other'),
+  sim.method = 'euclidean',
+  p.adjust.m = 'fdr',
+  perm = 1e3) %>% 
+  mutate(R = sqrt(R2)) %>% 
+  rename(p.bonferroni = p.adjusted)
+d3.adonis
+```
+
+```{r fig.width=2, fig.height=3}
+# aitchison dist
+mp_species.rcdi.donors.clr.dist <- dist(scale(mp_species.rcdi.donors.clr, center = T, scale = F), 
+                                 method = 'euclidean') %>% as.matrix()
+
+
+mp_species.rcdi.donors.clr.dist.long <- mp_species.rcdi.donors.clr.dist %>% 
+  as.data.frame(.) %>% 
+  distmat_to_long(., value_name = 'dist', rm_diag = T) %>%
+  left_join(., samples.metadata %>% select(Name, Donor.Unique_ID, Donor.Subject), 
+            by = c('row' = 'Name')) %>% 
+  left_join(., samples.metadata %>% select(Name, Donor.Unique_ID, Donor.Subject), 
+            by = c('col' = 'Name'), suffix = c('.row','.col')) %>% 
+  mutate(d3.tag = Donor.Subject.row == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' | 
+                  Donor.Subject.col == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' 
+                  ) %>% 
+  filter(Donor.Subject.row != Donor.Subject.col)
+```
+
+
+```{r fig.width=5, fig.height=3}
+mp_species.rcdi.donors.clr.dist.long %>% 
+  mutate(d3.tag = ifelse(d3.tag, 'MGH03D\nOther','Other\nOther')) %>% 
+  ggplot(aes(x = (dist - mean(mp_species.rcdi.donors.clr.dist.long$dist)) / 
+                    sd(mp_species.rcdi.donors.clr.dist.long$dist), 
+             fill = d3.tag)) + 
+  geom_density(alpha = 0.5) + 
+  scale_y_continuous(breaks = c(0, .25, .5),
+                     labels = percent_format()) +
+  geom_vline(xintercept = 1, linetype = 'dashed', alpha = 0.5) +
+  theme_cowplot() + 
+  theme(aspect.ratio = 1,
+        legend.position = 'top',
+        legend.title = element_blank()) + 
+  labs(x = 'Beta-Diversity (Z-Score)') 
+```
+
+
+```{r}
+output_name = 'TaxonomicDiversity.CLR_Euc.MGH03D.'
+ggsave(plot + theme(legend.position = 'none'),
+       device = 'pdf', dpi = 300, width = 2.5, height = 4,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+# Taxa Distinguishing MGH03D-related / Other
+
+## Format
+```{r}
+mp_species.rcdi.annotated <- 
+  samples.metadata %>% 
+  mutate(tag = paste0(Unique_ID, ' ', gsub(
+      gsub(Name, pattern = '.*_', replacement = ''), 
+                 pattern = '.pair', replacement = ''))) %>% 
+  right_join(., as.data.frame(mp_species.rcdi.data) %>% rownames_to_column('Name')) %>% 
+  filter(Sample_Type %in% c('post','donor'))
+
+X.metadata <-
+  mp_species.rcdi.annotated %>% 
+  select(Study:tag) %>% 
+  mutate(Y = ifelse(Donor.Subject == "D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21", 'MGH03D-related', 'Other'))
+
+X = 
+  mp_species.rcdi.annotated %>% 
+  column_to_rownames(var = 'tag') %>% 
+  select(-Study:-Study_Type) %>% 
+  as.data.frame()
+
+Y = as.factor(X.metadata$Y)
+```
+
+## sparse PLS Discriminant Analysis
+
+### Initial sPLS-DA
+sPLS-DA of rCDI recipients and donor samples based on taxonomy
+```{r}
+pseudo = 1e-6
+data.plsda = mixOmics::plsda(X = X + pseudo, Y, ncomp = nlevels(Y), logratio = 'CLR')
+data.perf.plsda = mixOmics::perf(data.plsda, validation = 'Mfold', folds = 5,
+                    progressBar = FALSE, nrepeat = 10)
+
+plot(data.perf.plsda, overlay = 'measure', sd=TRUE)
+mixOmics::plotIndiv(data.plsda , comp = c(1,2),
+          group = Y, 
+          ind.names = T,
+          ellipse = T,
+          legend = TRUE, title = 'PLSDA comp 1 - 2')
+```
+
+### Cross-Validate features
+5x10 CV
+```{r}
+seed = 100
+set.seed(seed)
+data.tune.splsda = mixOmics::tune.splsda(X + pseudo, 
+                          Y = Y, 
+                          ncomp = 2, 
+                          multilevel = NULL, 
+                          logratio = 'CLR',
+                          validation = c('Mfold'), 
+                          folds = 5, 
+                          dist = 'max.dist', 
+                          nrepeat = 10,
+                          progressBar = FALSE)
+
+plot(data.tune.splsda)
+select.keepX = data.tune.splsda$choice.keepX[1:2]
+select.keepX
+```
+
+### Apply CV features
+```{r}
+data.splsda = mixOmics::splsda(X = X + pseudo,  Y = Y, 
+                               ncomp = 2, 
+                               keepX = select.keepX, 
+                               logratio= "CLR",
+                               near.zero.var = T,
+)
+data.perf.splsda = mixOmics::perf(data.splsda, validation = 'Mfold', folds = 5, 
+                   progressBar = FALSE, nrepeat = 10, dist = 'max.dist')
+
+data.perf.splsda$error.rate
+
+mixOmics::plotIndiv(data.splsda , comp = c(1,2),
+          group = Y, ind.names = T, 
+          ellipse = TRUE, legend = TRUE, title = 'PLSDA comp 1 - 2')
+```
+
+Plot loadings and save to table
+```{r}
+# COMP 1
+pL.pc1 <- mixOmics::plotLoadings(data.splsda, title = 'sPLS-DA PC 1',
+                       comp = 1, method = 'median', contrib = 'max', 
+                       size.title = rel(1), border = T, 
+                       size.name = .5, size.legend = .75, 
+                       legend.color = colors.discrete[c(4, 1)])
+pL.pc1
+
+# COMP 2
+pL.pc2 <- mixOmics::plotLoadings(data.splsda, title = 'sPLS-DA PC 2',
+                       comp = 2, method = 'median', contrib = 'max', 
+                       size.title = rel(1), border = T, 
+                       size.name = .5, size.legend = .75, 
+                       legend.color = colors.discrete[c(4, 1)])
+pL.pc2
+
+pL <- 
+  bind_rows(pL.pc1, pL.pc2) %>% 
+  rownames_to_column('species') %>% 
+  left_join(., microbe.metadata, by = 'species') %>% 
+  rename(rel_abund.highest = GroupContrib) %>% 
+  select(species, 
+         habit.site,
+         oxygen.class,
+         MGH03D.related, 
+         Other, 
+         rel_abund.highest, 
+         importance)
+
+output_name = 'sPLSDA.MGH03D.Taxonomic.Loadings'
+write_tsv(pL, paste0(results_dir, fig, output_name, '.tsv'))
+```
+
+Heatmap plot of differentially abundant taxa 
+MGH03D-related:
++ Prevotella and Bacteroides/Parabacteroides-related species 
++ Odoribacter, Megasphaera, Alistipes, Desulfovibrio, Bacteroidales, Fusobacterium (mortiferum), Megamonas
+- R. torques, Lachnospiraceae, some Eubacterium species
+- Lachnospiraceae, Eggerthella, Anaerostipes, Streptococci
+
+This is supported by strain-level transfer showing that in MGH03D-related cases Prevotella, Parabacteroides, Megasphaera, Alistipes and Odoribacter are transferred
+Link to sulfate metabolism? IBD?
+```{r}
+sample_colors <-
+  tibble(tag = data.splsda$names$sample) %>% 
+  left_join(., X.metadata) %>% 
+  mutate(color = 
+        case_when(Y == 'MGH03D-related' & Sample_Type == 'donor' ~ colors.discrete[1],
+                  Y != 'MGH03D-related' & Sample_Type == 'donor' ~ colors.discrete[6],
+                  
+                  Y == 'MGH03D-related' & Sample_Type == 'post' & fmt_success ~ colors.discrete[2],
+                  Y == 'MGH03D-related' & Sample_Type == 'post' & !fmt_success ~ '#B4907E',
+                  
+                  Y != 'MGH03D-related' ~ colors.discrete[7], 
+                  T ~ 'white'))
+
+
+output_name = 'sPLSDA.MGH03D.Taxonomic.Heatmap'
+mixOmics::cim(data.splsda, row.sideColors = sample_colors$color, 
+              symkey = T, keysize = c(0.8, 0.8), 
+              row.names = F, 
+              col.names = gsub(data.splsda$names$colnames$X, pattern = '_noname', replacement = ''),
+              save = 'pdf', 
+              name.save = paste0(results_dir, fig, output_name),
+              margins = c(25, 10),
+              row.cex = .5, 
+              transpose = T,
+              scale = T, center = T)
+```
+
+
+
+# Functions Distinguishing MGH03D-related / Other
+
+## Format
+```{r}
+h2_unstratified <- samples.metadata %>% 
+  right_join(., read_tsv(paste0(data_dir, 'samples.h2_profiles.unstratified.tsv')), 
+             by = 'Name')
+```
+
+Annotate Humann2 with PWY Classes
+```{r}
+h2.rcdi.wide <-
+  h2_unstratified %>% 
+  filter(!is.na(pathway_description)) %>%
+  reshape2::dcast(., pathway_id + pathway_description ~ Name,
+                  value.var = 'CPM', fun.aggregate = sum, na.rm = T)
+
+# transpose
+h2.rcdi.wide <- h2_unstratified %>%
+  filter(!is.na(pathway_description)) %>%
+  pivot_wider(id_cols = 'pathway_description', 
+              names_from = 'Name',
+              values_from = 'CPM', 
+              values_fill = list(CPM = 0))
+
+# get data
+h2.rcdi.data <- t(select(h2.rcdi.wide, 
+                                    matches('.pair'), pathway_description) %>% 
+                               column_to_rownames(var = 'pathway_description'))
+```
+
+
+## Diversity
+Diversity metrics based on species-level relative abundances
+
+### Alpha: Shannon Index
+Alpha Diversity
+```{r}
+h2.rcdi.shannon <- data.frame(Shannon = diversity(h2.rcdi.data, index = 'shannon')) %>% rownames_to_column('Name')
+```
+
+### CLR-Transform
+```{r}
+pseudo = 1e-3 # CPM
+h2.rcdi.clr <- rgr::clr(h2.rcdi.data + pseudo,  ifclose = FALSE, ifwarn = TRUE)
+```
+
+### Beta: PCA of functional composition
+```{r}
+h2.rcdi.clr.pca_data <- PCA(h2.rcdi.clr, graph = FALSE, scale.unit = F)
+h2.rcdi.clr.pca <- h2.rcdi.clr.pca_data %>% 
+  .$ind %>% .$coord %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var = 'Name') 
+
+## annotate with metadata, diversity
+h2.rcdi.data.clr.pca <- h2.rcdi.clr.pca %>% 
+  left_join(., samples.metadata, by = 'Name') %>% 
+  left_join(., h2.rcdi.shannon, by = 'Name') %>% 
+  group_by(Case_Name, Sample_Type) %>% 
+  mutate(last = dense_rank(Days_Since_FMT) == max(dense_rank(Days_Since_FMT))) %>% 
+  mutate(d3.tag = case_when(
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'post' ~ 
+      paste0('post | D3 ', if_else(fmt_success, 'Success', 'Failed')),
+    Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21' & Sample_Type == 'donor' ~ 'donor | D3',
+    T ~ Sample_Type)) %>% 
+  ungroup()
+```
+
+```{r}
+plot <-
+  h2.rcdi.data.clr.pca %>% 
+
+  ggplot(aes(Dim.2, Dim.1, label = Unique_ID)) +
+  geom_point(shape = 21, col = 'black', size = 8, 
+  aes(fill = Sample_Type)) + # Sample_Type 
+  scale_fill_manual(values = c(colors.discrete[c(1,2,3)]), 
+                    guide = guide_legend(reverse = TRUE)) +
+  theme_cowplot() + 
+  labs(subtitle = 'Functional Composition') + 
+  coord_fixed() +
+  theme(plot.subtitle = element_text(hjust = 0.5),
+        legend.title=element_blank(),
+        aspect.ratio = 1
+        ) + 
+  labs(y = paste0('PC 1 (', round(h2.rcdi.clr.pca_data$eig[1,'percentage of variance'], 1), '%)'), 
+       x = paste0('PC 2 (', round(h2.rcdi.clr.pca_data$eig[2,'percentage of variance'], 1), '%)'))
+
+legend <- cowplot::get_legend(plot)
+plot + theme(legend.position = 'none')
+grid.newpage()
+grid.draw(legend)
+```
+
+
+## Format
+```{r}
+h2.rcdi.annotated <- 
+  samples.metadata %>% 
+  mutate(tag = paste0(Unique_ID, ' ', gsub(
+      gsub(Name, pattern = '.*_', replacement = ''), 
+                 pattern = '.pair', replacement = ''))) %>% 
+  right_join(., as.data.frame(h2.rcdi.data) %>% rownames_to_column('Name')) %>% 
+  filter(Sample_Type %in% c('post','donor')) %>% 
+  mutate(Y = ifelse(Donor.Subject == "D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21", 'MGH03D-related', 'Other'))
+
+
+X.metadata <-
+  h2.rcdi.annotated %>% 
+  select(Study:tag, Y)
+
+X = 
+  h2.rcdi.annotated %>% 
+  column_to_rownames(var = 'tag') %>% 
+  select(-Study:-Study_Type, -Y) %>% 
+  as.data.frame()
+
+Y = as.factor(X.metadata$Y)
+```
+
+## sparse PLS Discriminant Analysis
+
+### Initial sPLS-DA
+sPLS-DA of rCDI recipients and donor samples based on taxonomy
+```{r}
+pseudo = 1e-3
+data.plsda = mixOmics::plsda(X = X + pseudo, Y, ncomp = nlevels(Y), logratio = 'CLR')
+data.perf.plsda = mixOmics::perf(data.plsda, validation = 'Mfold', folds = 5,
+                    progressBar = FALSE, nrepeat = 10)
+
+plot(data.perf.plsda, overlay = 'measure', sd=TRUE)
+mixOmics::plotIndiv(data.plsda , comp = c(1,2),
+          group = Y, 
+          ind.names = T,
+          ellipse = T,
+          legend = TRUE, title = 'PLSDA comp 1 - 2')
+```
+
+### Cross-Validate features
+5x10 CV
+```{r}
+set.seed(seed)
+data.tune.splsda = mixOmics::tune.splsda(X + pseudo, 
+                          Y = Y, 
+                          ncomp = 2, 
+                          multilevel = NULL, 
+                          logratio = 'CLR',
+                          validation = c('Mfold'), 
+                          folds = 5, 
+                          dist = 'max.dist', 
+                          nrepeat = 10,
+                          progressBar = FALSE)
+
+plot(data.tune.splsda)
+select.keepX = data.tune.splsda$choice.keepX[1:2]
+select.keepX
+# select.keepX = c(20, 20)
+```
+
+### Apply CV features
+```{r}
+data.splsda = mixOmics::splsda(X = X + pseudo,  Y = Y, 
+                               ncomp = 2, 
+                               keepX = select.keepX, 
+                               logratio= "CLR",
+                               near.zero.var = T,
+)
+data.perf.splsda = mixOmics::perf(data.splsda, validation = 'Mfold', folds = 5, 
+                   progressBar = FALSE, nrepeat = 10, dist = 'max.dist')
+
+data.perf.splsda$error.rate
+
+mixOmics::plotIndiv(data.splsda , comp = c(1,2),
+          group = Y, ind.names = T, 
+          ellipse = TRUE, legend = TRUE, title = 'PLSDA comp 1 - 2')
+```
+
+Get colors for sample columns and taxa rows
+```{r}
+sample_colors <-
+  tibble(Unique_ID.splsda = str_split_fixed(data.splsda$names$sample, pattern = ' ', n = 2)[,1]) %>% 
+
+  cbind(., h2.rcdi.annotated) %>%
+
+  mutate(color = 
+        case_when(Y == 'Other' & Sample_Type == 'post' ~ colors.discrete[7],
+                  Y == 'Other' & Sample_Type == 'donor' ~ colors.discrete[6],
+                  
+                  Y == 'MGH03D-related' & Sample_Type == 'post' & fmt_success ~ colors.discrete[2],
+                  Y == 'MGH03D-related' & Sample_Type == 'post' & !fmt_success ~ '#B4907E',
+                  Y == 'MGH03D-related' & Sample_Type == 'donor' ~ colors.discrete[1], 
+                  T ~ 'white'))
+```
+
+
+Plot loadings and save to table
+```{r fig.width=10,fig.height=10}
+# COMP 1
+pL.pc1 <- mixOmics::plotLoadings(data.splsda, title = 'sPLS-DA PC 1',
+                       comp = 1, method = 'median', contrib = 'max', 
+                       size.title = rel(1), border = T, 
+                       size.name = .5, size.legend = .75, 
+                       legend.color = colors.discrete[c(4, 1)])
+pL.pc1
+
+# COMP 2
+pL.pc2 <- mixOmics::plotLoadings(data.splsda, title = 'sPLS-DA PC 2',
+                       comp = 2, method = 'median', contrib = 'max', 
+                       size.title = rel(1), border = T, margins = c(0, 0),
+                       size.name = .5, size.legend = .75, 
+                       legend.color = colors.discrete[c(4, 1)])
+pL.pc2
+
+pL <- 
+  bind_rows(pL.pc1, pL.pc2) %>% 
+  rownames_to_column('pathways') %>% 
+  rename(rel_abund.highest = GroupContrib) %>% 
+  select(pathways,
+         MGH03D.related,
+         Other,
+         rel_abund.highest,
+         importance)
+
+output_name = 'sPLSDA.MGH03D.Functional.Loadings'
+write_tsv(pL, paste0(results_dir, fig, output_name, '.tsv'))
+```
+
+```{r}
+output_name = 'sPLSDA.MGH03D.Functional.Heatmap'
+mixOmics::cim(data.splsda, 
+              symkey = T, keysize = c(0.8, 0.8), 
+              row.names = F,
+              row.sideColors = sample_colors$color, 
+
+              col.names = gsub(data.splsda$names$colnames$X, pattern = '_noname', replacement = ''),
+              save = 'pdf', 
+              name.save = paste0(results_dir, fig, output_name),
+              margins = c(33, 15), row.cex = .35, col.cex = .35,
+              # margins = c(25,20), row.cex = .8, col.cex = .8,
+              
+              transpose = T,
+              # row.cex = .5, col.cex = .75,
+              # margins = c(6.5, 20), 
+              scale = F, center = T)
+```
+

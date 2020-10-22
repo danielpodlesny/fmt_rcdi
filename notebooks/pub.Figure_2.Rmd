@@ -1,0 +1,526 @@
+---
+title: "Publication Figure 2"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_depth: 2
+    toc_float: true
+    toc_collapsed: false
+theme: cosmo
+---
+
+
+# Libraries
+Standard Import
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(scales)
+library(ggpubr)
+```
+
+Special
+```{r message=FALSE, warning=FALSE}
+library(lme4)
+library(sjPlot)
+library(sjstats)
+library(sjlabelled)
+```
+
+# Paths
+```{r}
+bin_dir = '../bin/'
+data_dir = '../data/'
+results_dir = '../results/'
+```
+
+# Custom Scripts / Theme
+```{r}
+source(paste0(bin_dir, 'theme_settings.R'))
+source (paste0(bin_dir, 'utilities.R'))
+source(paste0(bin_dir, 'species_competition_functions.R'))
+source(paste0(bin_dir, 'analysis_metadata.R'))
+date <- format(Sys.time(), "%d%m%y")
+```
+
+# Import Tables
+Metadata
+```{r message=FALSE, warning=FALSE}
+samples.metadata <- read_tsv(paste0(data_dir, 'samples.metadata.tsv'))
+microbe.taxonomy <- read_tsv(paste0(data_dir, 'microbe.taxonomy.tsv'))
+microbe.metadata <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'microbe.metadata.tsv'))) 
+```
+
+## Taxonomy
+MetaPhlAn2 tables
+combine with taxonomy
+```{r message=FALSE, warning=FALSE}
+mp_species.long <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'samples.mp_profiles.species.tsv')), 
+             by = 'species') %>% 
+  left_join(., samples.metadata, by = 'Name')
+```
+
+rCDI subset
+annotate with metadata
+```{r}
+mp_species.rcdi.long <- 
+  mp_species.long %>%
+  filter(Study %in% c(rcdi.studies)) 
+```
+
+## Case Summary
+SameStr Case-Summary table
+```{r message=FALSE, warning=FALSE}
+sstr_cases <- read_tsv(paste0(data_dir, 'samples.case_summary.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+
+# Set Figure
+```{r}
+fig = paste0('Fig_2.')
+```
+
+# Species-level Source
+
+
+## Mean across Cases
+Species-level plot of mean post-FMT rel. abund. by source, using the last available time point of successful FMT cases.
+
+### Format
+```{r}
+sstr_cases.source_mean <-
+  sstr_cases %>% 
+  filter(fmt_success, last_sample) %>% 
+  
+  mutate(unclassified_sp = ifelse(grepl(species, pattern = '_unclassified'), 
+                                  'unclassified', 'classified')) %>% 
+  group_by(Study_Type, Case_Name, Days_Since_FMT.post, unclassified_sp) %>% 
+  summarize_existed(.) %>% 
+  
+  group_by(Study_Type, unclassified_sp) %>% 
+  pivot_wider(names_from = 'unclassified_sp', values_from = matches('^[nrf].'),
+              names_sep = '.', 
+              id_cols = c('Study_Type', 'Case_Name', 'Days_Since_FMT.post')) %>% 
+  select(Study_Type, Case_Name, Days_Since_FMT.post, starts_with('r.')) %>%
+  
+  group_by(Study_Type, Case_Name, Days_Since_FMT.post) %>% 
+  pivot_longer(names_to = 'source', values_to = 'rel_abund', cols = starts_with('r.')) %>% 
+  ungroup() %>% 
+  separate(source, into = c(NA,'Sample','source','classified_sp')) %>% 
+  
+  filter(!source %in% c('either', 'any')) %>%
+  mutate(tag.source = case_when(
+    classified_sp == 'unclassified' ~ 'Unclassified', 
+    (Sample == 'donor' & source == 'post') | 
+    (Sample == 'post' & source == 'donor') ~ 'Donor-Specific', 
+    (Sample == 'recipient' & source == 'post') | 
+    (Sample == 'post' & source == 'recipient') ~ 'Recipient-Specific',
+    source == 'before' ~ 'Shared R/D', 
+    source == 'both' ~ 'Same Sp.',
+    Sample == 'post' & source == 'unique' ~ 'New',
+    T ~ str_to_title(source)
+  )) %>%  
+  mutate(tag.source = as.factor(tag.source)) %>% 
+  mutate(Sample = str_to_title(str_extract(Sample, pattern = '.'))) %>% 
+  
+  select(Study_Type, Sample, tag.source, rel_abund) %>% 
+  group_by(Study_Type, Sample, tag.source) %>%
+  summarize_all(.funs = funs(rel_abund.mean = round(mean(., na.rm = T), 2),
+                             rel_abund.sd = round(sd(., na.rm = T), 2))) %>% 
+  ungroup()
+```
+
+### Statistics
+
+Data
+```{r}
+sstr_cases.samples <-
+  sstr_cases %>% 
+  filter(fmt_success, last_sample) %>%
+  select(Study_Type, Study, Case_Name, Sample.recipient, Sample.post, Sample.donor, fmt_success) %>% 
+  distinct() %>% 
+  filter(Study_Type == 'rCDI')
+paste0('Recipient: ', length(unique(sstr_cases.samples$Sample.recipient)))
+paste0('Post-FMT: ', length(unique(sstr_cases.samples$Sample.post)))
+paste0('Donor: ', length(unique(sstr_cases.samples$Sample.donor)))
+```
+
+Last Post-FMT time point of successfully treated patients had species-level sources:
+- 54.41% Same Sp. 
+- 24.95% Donor-Specific
+- 11.33% Unclassified
+- 7.65% Recipient-Specific
+- 1.52% New/Unique
+Unseen/Unclear: 11.33 + 1.51 = 12.84%
+```{r}
+sstr_cases.source_mean %>% 
+  pivot_wider(names_from = 'Sample', 
+              values_from = c('rel_abund.mean', 'rel_abund.sd'), 
+              names_sep = '.') %>% 
+  mutate_at(.vars = vars(starts_with('rel_abund')), 
+            .funs = funs(replace_na(., 0))) %>% 
+  select(Study_Type, tag.source, ends_with('R'), ends_with('P'), ends_with('D')) %>% 
+  arrange(desc(Study_Type), desc(rel_abund.mean.P))
+```
+
+
+### Pie Chart
+Pie chart showing rel. abund. of sets of co-occurring species in recipients, donors, and post-FMT patients. Only a small fraction of post-FMT species has not been observed in the recipient or donor before.
+```{r fig.width=5,fig.height=4}
+coord_polar_fix <- coord_polar(theta = "y", start = 7.15)
+coord_polar_fix$is_free <- function() TRUE
+
+plot <-
+  sstr_cases.source_mean %>% 
+  mutate(tag.source = fct_relevel(tag.source, 
+                                  'Donor-Specific', 'New', 'Recipient-Specific',
+                                  'Unique', 'Shared R/D', 
+                                  'Same Sp.', 'Unclassified')) %>% 
+  ggplot(aes(x = fct_relevel(Sample, 'R', 'P', 'D'), 
+             y = rel_abund.mean, fill = tag.source)) +   
+  geom_bar(stat = 'identity', position = 'fill', color = 'black') + # 
+  facet_grid(rows = vars(fct_relevel(Study_Type, 'rCDI')), 
+             cols = vars(fct_relevel(Sample, 'R', 'P', 'D')),
+             scales = 'free', switch = 'y') + 
+  scale_fill_manual(values = c(colors.discrete[c(1, 2, 3)], 'white', 'black', 
+                               colors.discrete[c(5, 10)])) + 
+  theme_cowplot() + 
+
+  coord_polar_fix + 
+
+  theme(aspect.ratio = 1, 
+        axis.text = element_blank(),
+        axis.title = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank(),
+        strip.background = element_blank(),
+        panel.spacing = unit(-0.5, "lines"),
+        strip.text = element_text(size = 14),
+        legend.title = element_blank())
+
+plot
+```
+
+Exporting plot
+```{r}
+output_name = 'PostSource.Mean_SuccessfulCases.Species'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 3, height = 2,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+
+## Case-Wise
+Species-level plot of per-Case post-FMT rel. abund. by source
+
+### Format
+```{r}
+sstr_cases.source_case <-
+  
+  sstr_cases %>%
+  mutate(n = 1) %>% 
+  
+  select(Study_Type, Case_Name, Days_Since_FMT.post, fmt_success.label, 
+         kingdom, phylum, class, order, family, genus, species, 
+         n, rel_abund.recipient, rel_abund.post, rel_abund.donor) %>% 
+  
+  mutate(source = case_when(
+    grepl(species, pattern = '_unclassified') ~ 'Unclassified Sp.', 
+    (rel_abund.recipient > 0) & (rel_abund.donor > 0) & (rel_abund.post == 0) ~ 'Shared Before',
+    (rel_abund.recipient > 0) & (rel_abund.donor > 0) & (rel_abund.post > 0) ~ 'Same Sp.',
+    (rel_abund.recipient > 0) & (rel_abund.donor == 0) & (rel_abund.post > 0) ~ 'Recipient / Initial Sample',
+    (rel_abund.recipient == 0) & (rel_abund.donor > 0) & (rel_abund.post > 0) ~ 'Donor',
+    (rel_abund.recipient > 0) & (rel_abund.donor == 0) & (rel_abund.post == 0) ~ 'Unique Recipient',
+    (rel_abund.recipient == 0) & (rel_abund.donor > 0) & (rel_abund.post == 0) ~ 'Unique Donor',
+    (rel_abund.recipient == 0) & (rel_abund.donor == 0) & (rel_abund.post > 0) ~ 'Unique to Time Point',
+    T ~ 'Other'
+    )) %>% 
+  filter(!source %in% c('Unique Donor', 'Unique Recipient', 'Shared Before')) %>% 
+  filter(rel_abund.post > 0) %>% 
+
+  group_by(Study_Type, Case_Name, Days_Since_FMT.post, fmt_success.label) %>% 
+  mutate(f = n / sum(n, na.rm = T)) %>% 
+  pivot_longer(names_to = 'metric', 
+               values_to = 'value', 
+               cols = c('rel_abund.post', 'n', 'f')) %>% 
+
+  group_by(Study_Type, Case_Name, Days_Since_FMT.post, fmt_success.label, source, metric) %>% 
+  summarize(value = sum(value), .groups = 'drop') %>% 
+
+  mutate(value = ifelse(metric == 'rel_abund.post',  value / 100, value),
+         metric = case_when(
+           metric == 'rel_abund.post' ~ 'Rel. Abund.', 
+           metric == 'f' ~ 'Spp. Fraction', 
+           metric == 'n' ~ 'Count of Spp.', 
+           T ~ 'Other'))
+```
+
+### Bar Charts, per Case
+rCDI - Bar charts showing post-FMT rel. abund. of sets of co-occurring species in recipients, donors, and post-FMT patients.
+```{r fig.width=10}
+source_order <- c('Donor', 'Recipient / Initial Sample', 'Unique to Time Point', 'Same Sp.')
+
+plot.rcdi <-
+  sstr_cases.source_case %>% 
+  filter(metric == "Rel. Abund.") %>% 
+  filter(Study_Type == 'rCDI') %>% 
+  
+  mutate(ordering = -as.numeric(as.factor(Case_Name)) + (Days_Since_FMT.post/1000)) %>% 
+  ggplot(aes(
+    fct_reorder(paste0('D', Days_Since_FMT.post, ' | ', str_remove(Case_Name, pattern = 'Case_')), ordering),
+    y = value, 
+   fill = fct_relevel(source, source_order))) + 
+
+   geom_bar(stat = 'identity', position = position_fill(), width = 1, col = 'black') +
+  theme_cowplot() + 
+  scale_y_continuous(labels = percent_format(),
+                     breaks = c(1, .75, .5, .25, 0),
+                     expand = c(0,0)) +
+  scale_fill_manual(values = c(colors.discrete[c(1, 3, 2, 5, 10)]), 
+                    
+                    guide = guide_legend(reverse = TRUE)) + 
+  labs(y = 'Rel. Abund.') + 
+  theme(
+        axis.title.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 10),
+        axis.ticks.x = element_blank(),
+        legend.title=element_blank(),
+        legend.position = 'top')
+plot.rcdi
+```
+
+Control - Bar charts showing >=second time point rel. abund. of sets of co-occurring species in first and second time points of controls.
+```{r fig.width=15}
+plot.control <- 
+  sstr_cases.source_case %>% 
+  filter(metric == "Rel. Abund.") %>% 
+  filter(Study_Type == 'Control') %>% 
+  filter(Days_Since_FMT.post <= 373) %>% # ~ same time range as last rcdi
+  
+  mutate(ordering = as.numeric(as.factor(Case_Name)) + (Days_Since_FMT.post/1000)) %>% 
+  ggplot(aes(
+    fct_reorder(paste0('D', Days_Since_FMT.post, ' | ', str_remove(Case_Name, pattern = 'Case_')), ordering),
+    y = value, 
+   fill = fct_relevel(source, source_order))) + 
+  
+
+  geom_bar(stat = 'identity', position = position_fill(), width = 1, col = 'black') +
+  theme_cowplot() + 
+  scale_y_continuous(labels = percent_format(),
+                     breaks = c(1, .75, .5, .25, 0),
+                     expand = c(0,0)) +
+  scale_fill_manual(values = c(colors.discrete[c(3, 2, 10)]), 
+                    
+                    guide = guide_legend(reverse = TRUE)) + 
+  labs(y = 'Rel. Abund.') + 
+  theme(
+        axis.title.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7.5),
+        legend.title=element_blank(),
+        legend.position = 'top')
+plot.control
+```
+
+Exporting plots
+```{r}
+output_name = 'PostSource.Cases.rCDI.Species'
+ggsave(plot.rcdi + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 9, height = 3.5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+output_name = 'PostSource.Cases.Control.Species'
+ggsave(plot.control + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 25, height = 3.5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+
+# Post-FMT Presence/Absence (Species)
+Using GLMM to model post-FMT species presence/absence post-FMT.
+We only have sparse data and single cases for later time points, limiting to <= 84 days
+```{r}
+sstr_cases %>%
+  filter(Days_Since_FMT.post <= 84) %>%
+  
+  filter(Study_Type %in% c('rCDI') ) %>% 
+  filter(kingdom == 'Bacteria') %>% 
+  filter(fmt_success) %>% 
+  distinct(Days_Since_FMT.post) %>% 
+  summary(.)
+```
+
+### Format
+```{r}
+scale_gelman <- function(x) {
+  return((x - mean(x)) / (2 * sd(x)))
+}
+
+sstr_cases.scaled <- 
+  sstr_cases %>%
+
+  filter(Study_Type %in% c('rCDI') ) %>% 
+  filter(kingdom == 'Bacteria') %>% 
+  filter(fmt_success, Days_Since_FMT.post <= 84) %>%
+
+  mutate(source = ifelse(grepl(species, pattern = 'unclassified'),  'Unclassified', source)) %>%
+  mutate(source = case_when(
+    analysis_level == 'species' & source == 'self' ~ 'Self Sp.',
+    analysis_level == 'species' & source == 'donor' ~ 'Donor Sp.',
+    analysis_level == 'species' & source == 'unique' ~ 'Unique Sp.',
+    T ~ source
+  )) %>% 
+  
+  left_join(., microbe.metadata) %>%
+  mutate(habit.oral = ifelse(is.na(habit.oral), F, habit.oral)) %>% 
+
+
+  mutate(Donor = replace_na(rel_abund.donor > 0, F), 
+         PostTreatment = replace_na(rel_abund.post > 0, F), 
+         Pre = replace_na(rel_abund.recipient > 0, F),
+         Both = Donor & Pre, 
+         Any = Donor | Pre) %>% 
+  
+  mutate(Engrafted = `Donor/Post-FMT.mvs` > min_similarity & 
+                     `Donor/Post-FMT.overlap` > min_overlap) %>%
+  mutate(Engrafted = replace_na(Engrafted, F),
+         Engrafted = ifelse(analysis_level == 'species' |
+                            grepl(species, pattern = 'unclassified') |
+                            !species %in% microbe.metadata$species, NA, Engrafted)) %>% 
+
+  # filter only species that existed in any of recipient or donor
+  filter(Any) %>%
+    
+  rename(OxyTol = 'oxygen.tolerant', 
+         OxyClass = 'oxygen.class',
+         DaysSinceFMT = 'Days_Since_FMT.post', 
+         Case = 'Case_Name',
+         AbundanceDonor = 'rel_abund.donor',
+         AbundanceRecipient = 'rel_abund.recipient',
+         AbundancePost = 'rel_abund.post') %>% 
+  mutate(Habitat = ifelse(habit.oral, 'Oral', 'Not-Oral'),
+         OxyTol = ifelse(OxyTol, 'Tolerant', 'Not-Tolerant')) %>% 
+  mutate(Detected = case_when(
+    Pre & !Donor ~ 'Recipient', 
+    !Pre & Donor ~ 'Donor',
+    Pre & Donor ~ 'Both')) %>% 
+  mutate(Specificity = ifelse(Detected == 'Both', F, T)) %>% 
+  mutate_at(.vars = vars(Case, 
+                         Specificity, 
+                         Detected, Engrafted,
+                         phylum, class, order, family,
+                         OxyTol, OxyClass, Habitat, PostTreatment,
+                         ),
+            .funs = funs(as.factor(.))) %>% 
+  mutate(
+  Detected = fct_relevel(Detected, 'Recipient'), 
+  OxyClass = fct_relevel(OxyClass, 'aerobe'),
+  Habitat = fct_relevel(Habitat, 'Not-Oral'),
+  OxyTol = fct_relevel(OxyTol, 'Not-Tolerant'),
+  Phylum = fct_relevel(phylum, 'Firmicutes')
+  ) %>% 
+  select(phylum:species, Engrafted, PostTreatment, 
+         AbundancePost, Detected, AbundanceDonor, AbundanceRecipient, 
+         Habitat, OxyTol, DaysSinceFMT, Case, OxyClass) %>% 
+  mutate(AbundanceDonor = pseudo_log_trans(1e-4, 10)$transform(AbundanceDonor),
+         AbundanceRecipient = pseudo_log_trans(1e-4, 10)$transform(AbundanceRecipient),
+         AbundanceRatio = AbundanceDonor-AbundanceRecipient,
+         DaysSinceFMT = log10(DaysSinceFMT)
+         )  %>% 
+  mutate_at(.vars = vars(starts_with('Abundance'), DaysSinceFMT),
+            .funs = funs(scale_gelman(.)))
+```
+
+### GLMM Model
+Using cases as random effect to account for repeated measurements
+```{r}
+fit.rcdi <- glmer(PostTreatment ~ 
+                        Detected +
+                        AbundanceDonor + 
+                        AbundanceRecipient + 
+                        AbundanceRecipient:AbundanceDonor + 
+                        Detected:DaysSinceFMT + 
+                        Detected:Habitat + 
+                        Detected:OxyTol +
+                        (1 | Case), 
+             family=binomial(link='logit'), data=sstr_cases.scaled)
+```
+
+```{r}
+summary(fit.rcdi)
+```
+
+### Forest Plot
+```{r fig.width=6,fig.height=5}
+a = 'Presence\nBefore FMT'
+b = 'Relative\nAbundance'
+c = 'Physiology'
+d = 'Days\nSince FMT' 
+e = 'Oral Habitat' 
+f = 'Oxygen Tolerant' 
+
+plot <-
+  sjPlot::plot_model(fit.rcdi, se = T, 
+                     vline.color = "black", 
+                     wrap.labels = 1e4, # transform = NULL,
+            sort.est = F, show.p = T, show.values = T, value.offset = 0.35, 
+            colors = 'black', axis.title = 'Log of Odds Ratio (95% CI)',
+            group.terms = c(a,a, b,b,b, d,d,d, e,e,e, f,f,f),
+            title = 'Species Presence Post-FMT'
+            ) + 
+  theme_cowplot() + 
+  theme(strip.background = element_blank(), 
+    strip.text.y.left = element_text(angle = 0, hjust = 0), 
+    plot.title = element_blank(),
+    axis.text.y = element_text(size = 11)
+    ) + 
+  
+  facet_grid(rows = vars(fct_relevel(group, a, b, d, e, f)),
+             scales = 'free_y', space = 'free_y', switch = 'y') +
+ 
+    scale_x_discrete(
+      labels = c(
+        "DetectedBoth" = "Found in Both*",
+        "DetectedDonor" = "Donor-Specific*",
+
+        'AbundanceDonor' = 'Donor',
+        'AbundanceRecipient' = 'Recipient',
+        'AbundanceDonor:AbundanceRecipient' = 'Ratio D/R',
+        
+        "DetectedRecipient:DaysSinceFMT" = "Recipient-Specific",
+        "DetectedBoth:DaysSinceFMT" = "Found in Both",
+        "DetectedDonor:DaysSinceFMT" = "Donor-Specific",
+        "DetectedRecipient:HabitatOral" = "Recipient-Specific",
+        "DetectedBoth:HabitatOral" = "Found in Both",
+        "DetectedDonor:HabitatOral" = "Donor-Specific",
+
+        "DetectedRecipient:OxyTolTolerant" = "Recipient-Specific",
+        "DetectedBoth:OxyTolTolerant" = "Found in Both",
+        "DetectedDonor:OxyTolTolerant" = "Donor-Specific"
+        )
+      ) +
+   scale_y_continuous(expand = c(0.1,0)) 
+plot
+```
+
+Exporting plots, tables
+```{r}
+output_name = 'PostPresence.Species.GLMM'
+
+# write model stats to html
+sjPlot::tab_model(fit.rcdi, prefix.labels = "varname", transform = NULL,
+                  file = paste0(results_dir, fig, output_name, '.Model.html')
+                  )
+
+  ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 6, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+

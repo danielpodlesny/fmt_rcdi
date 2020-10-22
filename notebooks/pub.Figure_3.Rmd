@@ -1,0 +1,1273 @@
+---
+title: "Publication Figure 3"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_depth: 2
+    toc_float: true
+    toc_collapsed: false
+theme: cosmo
+---
+
+
+# Libraries
+Standard Import
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(scales)
+library(ggpubr)
+```
+
+Special
+```{r}
+library(ggridges)
+library(grid)
+# library(Hmisc)
+# library(ggExtra)
+```
+
+# Paths
+```{r}
+bin_dir = '../bin/'
+data_dir = '../data/'
+results_dir = '../results/'
+```
+
+# Custom Scripts / Theme
+```{r}
+source(paste0(bin_dir, 'theme_settings.R'))
+source (paste0(bin_dir, 'utilities.R'))
+source(paste0(bin_dir, 'species_competition_functions.R'))
+source(paste0(bin_dir, 'distmat_utils.R'))
+source(paste0(bin_dir, 'analysis_metadata.R'))
+date <- format(Sys.time(), "%d%m%y")
+```
+
+# Import Tables
+Metadata
+```{r message=FALSE, warning=FALSE}
+samples.metadata <- read_tsv(paste0(data_dir, 'samples.metadata.tsv'))
+microbe.taxonomy <- read_tsv(paste0(data_dir, 'microbe.taxonomy.tsv'))
+microbe.metadata <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'microbe.metadata.tsv'))) 
+```
+
+## Taxonomy
+MetaPhlAn2 tables
+combine with taxonomy
+```{r message=FALSE, warning=FALSE}
+mp_species.long <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'samples.mp_profiles.species.tsv')), 
+             by = 'species') %>% 
+  left_join(., samples.metadata, by = 'Name')
+```
+
+rCDI subset
+annotate with metadata
+```{r}
+mp_species.rcdi.long <- 
+  mp_species.long %>%
+  filter(Study %in% c(rcdi.studies)) 
+```
+
+## SameStr Data
+SameStr Case-Summary table
+```{r message=FALSE, warning=FALSE}
+samples.sstr_data <- read_tsv(paste0(data_dir, 'samples.sstr_data_wmetadata.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+## Strain Finder Data
+Strain Finder Tables
+```{r message=FALSE, warning=FALSE}
+sf_strain_table <- read_tsv(paste0(data_dir, 'ALM.Strain_Table.tsv')) %>% 
+  rename(Sample = 'X1')
+sf_species_table <- read_tsv(paste0(data_dir, 'ALM.MG_OTU_Bacteria.tsv')) %>% 
+  rename(bact = `BACT ID`) %>% 
+  rename_all(.funs = funs(str_to_lower(.)))
+```
+
+## Mock Data
+Multi-Strain Species Population
+```{r message=FALSE, warning=FALSE}
+mock.sstr_data <- read_tsv(paste0(data_dir, 'mock.sstr_data_wmetadata.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+## Fast ANI
+FastAni Comparison Data
+```{r message=FALSE, warning=FALSE}
+refs <- read_tsv(paste0(data_dir, 'references.mp_fastani.tsv'))
+```
+
+# Set Figure
+```{r}
+fig = paste0('Fig_3.')
+```
+
+
+# Specificity of Shared Taxa
+Comparing distributions of shared (genera, species, and) strains in related and unrelated sample pairs in order to assess the specificity with which methods call shared strains.
+
+## Strain Finder
+
+### Format
+Taxa per sample matrix
+```{r}
+# mg-OTU strain-level matrix
+sf_strain_table.matrix <-
+  sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>%
+  column_to_rownames('Sample') %>% 
+  as.matrix()
+
+colnames(sf_strain_table.matrix) <- 
+  tibble(tax = colnames(sf_strain_table.matrix)) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  group_by(bact) %>% 
+  mutate(strain_id = paste0(bact, '.', dense_rank(gdna))) %>% 
+  pull(strain_id)
+
+# mg-OTU species-level matrix
+sf_species_table.matrix <-
+  sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>% 
+  pivot_longer(names_to = 'tax', values_to = 'rel_abund', cols = starts_with('BACT')) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  select(-gdna) %>% 
+  group_by(Sample, bact) %>% 
+  summarize(rel_abund = as.numeric(sum(rel_abund, na.rm = T) > 0), .groups = 'drop') %>% 
+  pivot_wider(id_cols = 'Sample', names_from = 'bact', values_from = 'rel_abund') %>% 
+  column_to_rownames('Sample') %>% 
+  as.matrix()
+
+# mg-OTU genus-level matrix
+sf_genus_table.matrix <-
+  sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>%
+  pivot_longer(names_to = 'tax', values_to = 'rel_abund', cols = starts_with('BACT')) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  select(-gdna) %>% 
+  group_by(Sample, bact) %>% 
+  summarize(rel_abund = as.numeric(sum(rel_abund, na.rm = T) > 0), .groups = 'drop') %>% 
+  left_join(., sf_species_table %>% select(bact, genus), by = 'bact') %>% 
+  group_by(Sample, genus) %>% 
+  summarize(rel_abund = as.numeric(sum(rel_abund, na.rm = T) > 0), .groups = 'drop') %>% 
+  pivot_wider(id_cols = 'Sample', names_from = 'genus', values_from = 'rel_abund') %>% 
+  column_to_rownames('Sample') %>% 
+  as.matrix()
+```
+
+Sample/Sample co-occurrence matrix at mg-OTU species- and strain-level
+```{r}
+# genus
+sf_genus_table.dist <- sf_genus_table.matrix %*% t(sf_genus_table.matrix)
+sf_genus_table.long <- 
+  distmat_to_long(distmat = as.data.frame(sf_genus_table.dist), 
+                  value_name = 'n.shared_genus',
+                  rm_diag = T)
+sf_genus_counts <- diag(sf_genus_table.dist) %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Sample') %>% 
+  rename(n.genus = '.')
+
+# species
+sf_species_table.dist <- sf_species_table.matrix %*% t(sf_species_table.matrix)
+sf_species_table.long <- 
+  distmat_to_long(distmat = as.data.frame(sf_species_table.dist), 
+                  value_name = 'n.shared_species',
+                  rm_diag = T)
+sf_species_counts <- diag(sf_species_table.dist) %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Sample') %>% 
+  rename(n.species = '.')
+
+# strain
+sf_strain_table.dist <- sf_strain_table.matrix %*% t(sf_strain_table.matrix)
+sf_strain_table.long <- 
+  distmat_to_long(distmat = as.data.frame(sf_strain_table.dist), 
+                  value_name = 'n.shared_strains',
+                  rm_diag = T)
+sf_strain_counts <- diag(sf_strain_table.dist) %>% 
+  as.data.frame() %>% 
+  rownames_to_column('Sample') %>% 
+  rename(n.strains = '.')
+```
+
+join data
+```{r}
+sf <-
+  full_join(sf_species_table.long, sf_strain_table.long, by = c('row','col')) %>% 
+  full_join(., sf_genus_table.long, by = c('row','col')) %>% 
+  
+  left_join(., sf_genus_counts, by = c('row' = 'Sample')) %>% 
+  left_join(., sf_genus_counts, by = c('col' = 'Sample'), suffix = c('.row', '.col')) %>% 
+  
+  left_join(., sf_species_counts, by = c('row' = 'Sample')) %>% 
+  left_join(., sf_species_counts, by = c('col' = 'Sample'), suffix = c('.row', '.col')) %>% 
+  
+  left_join(., sf_strain_counts, by = c('row' = 'Sample')) %>% 
+  left_join(., sf_strain_counts, by = c('col' = 'Sample'), suffix = c('.row', '.col')) %>% 
+  
+  rename(Sample.row = row, 
+         Sample.col = col, 
+         n.shared_species.sf = n.shared_species,
+         n.shared_strains.sf = n.shared_strains, 
+         n.shared_genus.sf = n.shared_genus) %>% 
+  
+  rename_at(.vars = vars(matches('n.*col'), matches('n.*row')),
+            .funs = funs(gsub(gsub(., pattern = '.row', replacement = '.sf.row'), 
+                              pattern = '.col', replacement = '.sf.col'))) %>%
+  left_join(., samples.metadata, by = c('Sample.row' = 'Sample')) %>% 
+  left_join(., samples.metadata, by = c('Sample.col' = 'Sample'), suffix = c('.row', '.col')) %>% 
+  filter(!is.na(Name.row), !is.na(Name.col)) %>% 
+  rowwise() %>% 
+  mutate(Name.paste = paste0(sort(c(Name.row, Name.col)), collapse = ',')) %>% 
+  ungroup() %>% 
+  mutate(n.not_shared_strains.sf = (n.strains.sf.row - n.shared_strains.sf) + (n.strains.sf.col - n.shared_strains.sf), 
+         n.not_shared_species.sf = (n.species.sf.row - n.shared_species.sf) + (n.species.sf.col - n.shared_species.sf), 
+         n.not_shared_genus.sf = (n.genus.sf.row - n.shared_genus.sf) + (n.genus.sf.col - n.shared_genus.sf), 
+         n.total_strains.sf = n.shared_strains.sf + n.not_shared_strains.sf,
+         n.total_species.sf = n.shared_species.sf + n.not_shared_species.sf, 
+         n.total_genus.sf = n.shared_genus.sf + n.not_shared_genus.sf, 
+         f.shared_strains.sf = n.shared_strains.sf / n.total_strains.sf,
+         f.shared_species.sf = n.shared_species.sf / n.total_species.sf,
+         f.shared_genus.sf = n.shared_genus.sf / n.total_genus.sf)
+```
+
+### Shared Taxa
+Density Ridge Plot based on Strain Finder Data published with the Alm dataset, showing co-occurrence of genera, species, and strains in samples which are common in unrelated but more common in related samples.
+```{r fig.height=5,fig.width=10}
+sf %>% 
+  mutate(related = ifelse(replace_na(Donor.Subject.row == Donor.Subject.col, F), 'Related', 'Unrelated')) %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = c('n.shared_genus.sf', 'n.shared_species.sf', 'n.shared_strains.sf')) %>% 
+  mutate(metric = case_when(
+         metric == 'n.shared_strains.sf' ~ 'StrainFinder/\nmg-OTUs (strain)', 
+         metric == 'n.shared_species.sf' ~ 'StrainFinder/\nmg-OTUs (species)',
+         metric == 'n.shared_genus.sf' ~ 'StrainFinder/\nmg-OTUs (genus)',
+         T ~ metric
+       )) %>% 
+ggplot(aes(value, fct_relevel(metric, 
+                              'StrainFinder/\nmg-OTUs (strain)', 
+                              'StrainFinder/\nmg-OTUs (species)', 
+                              'StrainFinder/\nmg-OTUs (genus)'), fill = related)) + 
+  geom_density_ridges(panel_scaling = F, alpha = 0.75, scale = 5) + 
+  scale_fill_manual(values = c('black','white')) +
+  scale_x_continuous(trans = pseudo_log_trans(), breaks = c(0, 3, 10, 30, 100, 300)) +
+  theme_cowplot() +
+  labs(x = 'Shared Bacteria') +
+  theme(legend.key.size = unit(c(.75, .5, .75, .5), "lines"),
+        legend.title = element_blank(),
+        axis.title.y = element_blank(), 
+        )
+```
+
+
+## SameStr
+
+### Format
+Generate MetaPhlAn co-occurrence table, taxa counts
+```{r}
+cooccurrence <- mp_cooccurrence(mp_species.long)
+taxa_counts <- cooccurrence$mp_taxa_counts
+taxa_cooccurrence <- cooccurrence$mp_taxa_table.long
+```
+
+Merge with SameStr strain-level data
+```{r}
+sstr <-
+  samples.sstr_data %>% 
+  
+  group_by(Study.pair, Name.row, Name.col, 
+           Case_Name.pair, Case_Name.row, Case_Name.col, Same_Case.label, 
+           Related.label, Related.bool, Pair_Type) %>%
+  summarize(.groups = 'drop',
+            n.analyzed_strains = sum(overlap > min_overlap, na.rm = T),
+            n.shared_strains.mvs = sum(distance.mvs > min_similarity & overlap > min_overlap, na.rm = T),
+            n.shared_strains.cvs = sum(distance.cvs > min_similarity & overlap > min_overlap, na.rm = T)) %>%
+
+  # tag successful fmt cases
+  mutate(fmt_success = !Case_Name.pair %in% cases_failed) %>% 
+  mutate(Study.row = str_split_fixed(Name.row, pattern = '_', 2)[,1], 
+         Study.col = str_split_fixed(Name.col, pattern = '_', 2)[,1]) %>% 
+  mutate(Related.text = ifelse(Related.bool, 'Related', 'Unrelated')) %>% 
+
+  rowwise() %>%
+  mutate(Sample_Pair = paste0(sort(c(Name.row, Name.col)), collapse = ',')) %>% 
+  ungroup() %>% 
+  left_join(., taxa_cooccurrence, by = 'Sample_Pair') %>% 
+  left_join(., taxa_counts, by = c('Name.row' = 'Sample')) %>% 
+  left_join(., taxa_counts, by = c('Name.row' = 'Sample'), suffix = c('.row','.col')) %>% 
+  
+  mutate(n.not_shared_species = (n.species.row - n.shared_species) + (n.species.col - n.shared_species), 
+         n.not_shared_genus = (n.genus.row - n.shared_genus) + (n.genus.col - n.shared_genus), 
+         n.not_shared_family = (n.family.row - n.shared_family) + (n.family.col - n.shared_family), 
+
+         n.total_species = n.shared_species + n.not_shared_species, 
+         n.total_genus = n.shared_genus + n.not_shared_genus, 
+         n.total_family = n.shared_family + n.not_shared_family, 
+
+         f.shared_strains.mvs = replace_na(n.shared_strains.mvs / n.analyzed_strains, 0), 
+         f.shared_strains.cvs = replace_na(n.shared_strains.cvs / n.analyzed_strains, 0), 
+         f.shared_species = n.shared_species / n.total_species,
+         f.shared_genus = n.shared_genus / n.total_genus, 
+         f.shared_family = n.shared_family / n.total_family)
+  
+```
+
+Subset rCDI Alm data
+```{r}
+sstr.alm <-
+  sstr %>%
+  # ALM only, same as above
+  filter(Study.pair == 'ALM')
+
+sstr.control <- 
+  sstr %>% 
+  # Control only
+  filter(Study.row %in% control.studies &
+         Study.col %in% control.studies) %>% 
+  mutate(Related.text = ifelse(Related.bool, 'Related', 'Unrelated'))
+```
+
+### Shared Taxa
+Density Ridge Plot based on SameStr Data for the same Alm dataset shown above, showing co-occurrence of genera, species, and strains in samples. Co-occurrence is common in unrelated genera and species, but more separable compared to SF. For shared strains, distributions divide related from unrelated sample pairs which mostly don't share any strains. 
+
+
+#### Alm
+```{r fig.width=10}
+sstr.alm %>% 
+
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = c('n.shared_genus', 'n.shared_species', 'n.shared_strains.mvs')) %>% 
+  mutate(metric = case_when(
+         metric == 'n.shared_strains.mvs' ~ 'SameStr/\nMetaPhlAn2 (strain)', 
+         metric == 'n.shared_species' ~ 'SameStr/\nMetaPhlAn2 (species)', 
+         metric == 'n.shared_genus' ~ 'SameStr/\nMetaPhlAn2 (genus)', 
+         T ~ metric
+       )) %>% 
+ggplot(aes(value, fct_relevel(metric, 
+                              'SameStr/\nMetaPhlAn2 (strain)',
+                              'SameStr/\nMetaPhlAn2 (species)', 
+                              'SameStr/\nMetaPhlAn2 (genus)',), fill = Related.bool)) + 
+  geom_density_ridges(alpha = 0.75, scale = 4, stat = 'binline', bins = 18) +  # scale = 4
+  scale_x_continuous(trans = pseudo_log_trans(), breaks = c(0, 3, 10, 30, 100, 300)) +
+
+  scale_fill_manual(values = c('black','white')) +
+  theme_cowplot() +
+  labs(x = 'Shared Bacteria') +
+  theme(legend.key.size = unit(c(.75, .5, .75, .5), "lines"),
+        legend.title = element_blank(),
+        axis.title.y = element_blank(), 
+        )
+```
+
+Most unrelated strains
+```{r}
+samples.sstr_data %>% 
+  filter(Study.pair == 'ALM') %>% 
+  filter(overlap > min_overlap) %>%
+  group_by(genus, species, Related.bool) %>% 
+  summarize(count = sum(Shared_Strain.bool == T, na.rm = T),
+            total = sum(!is.na(Shared_Strain.bool))) %>% 
+  mutate(fraction = count / total) %>% 
+  filter(total > 20) %>% 
+  arrange(Related.bool, desc(fraction))
+```
+
+#### Control
+```{r fig.width=2.85,fig.height=3.25}
+plot.control <-
+  sstr %>% 
+  filter(Study.row %in% control.studies &
+         Study.col %in% control.studies) %>% 
+  mutate(Related.text = ifelse(Related.bool, 'Related', 'Unrelated')) %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = c('f.shared_strains.mvs', 'f.shared_strains.cvs')) %>% 
+mutate(metric = case_when(
+  metric == 'f.shared_strains.mvs' ~ 'SameStr', 
+  metric == 'f.shared_strains.cvs' ~ 'Consensus', 
+)) %>% 
+ggplot(aes(value, Related.text, fill = metric)) + 
+  geom_density_ridges(alpha = 0.75, scale = 4, stat = 'binline', bins = 18) +  # scale = 4
+  scale_x_continuous(labels = percent_format(), expand = c(0,0), breaks = c(0, 0.5, 1)) + 
+  scale_fill_manual(values = c('black','white')) +
+  theme_cowplot() +
+  labs(x = 'as [%] of analyzed Spp.') + 
+  theme(legend.title = element_blank(),
+        axis.title.y = element_blank(), 
+        )
+plot.control + theme(legend.position = 'none')
+```
+
+Exporting Plot
+```{r}
+output_name = 'SharedStrains.Control'
+
+ggsave(plot.control + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 2.85, height = 3.25,
+       filename = paste0(results_dir, fig, output_name, '.RidgePlot.pdf'))
+```
+
+```{r}
+sstr.control %>% 
+  select(Related.text, n.shared_strains.mvs) %>% 
+  group_by(Related.text) %>%
+  summarize_all(.funs = funs(n(), min, max, median, mean, sd))
+```
+
+
+# Tool Comparison
+
+## Format
+Merge Tool Data
+```{r}
+alm_table <-
+  sf %>% 
+  left_join(., sstr.alm %>% 
+  rename_at(.vars = vars(n.shared_strains.mvs,
+                         n.shared_species,
+                         n.shared_genus,
+                         n.shared_family,
+                         f.shared_strains.mvs,
+                         f.shared_species,
+                         f.shared_genus,
+                         f.shared_family),
+            .funs = funs(paste0(gsub(., pattern = '.mvs', replacement = ''), '.sstr'))) %>% 
+
+  rowwise() %>% 
+  mutate(Name.paste = paste0(sort(c(Name.row, Name.col)), collapse = ',')) %>% 
+  ungroup() %>% 
+  select(-Name.row, -Name.col, -Case_Name.row, -Case_Name.col)) %>% 
+  
+  # label study, case
+  mutate(Case_Split.row = str_split(Case_Name.row, ';'), 
+         Case_Split.col = str_split(Case_Name.col, ';')) %>%
+  rowwise() %>%
+  mutate(Study.same = Study.row == Study.col, 
+         Study.pair = ifelse(Study.same, Study.row, 'Unrelated'),
+         Case_Name.same = (Case_Name.col %in% Case_Split.row) | (Case_Name.row %in% Case_Split.col), 
+         Case_Name.pair = ifelse(Case_Name.same, intersect(Case_Split.row, Case_Split.col), 'Unrelated')) %>% 
+  select(-starts_with('Case_Split.')) %>% 
+  ungroup() %>% 
+  
+  # label comparison type + study, case 
+  mutate(
+    Pair_Type = 'No-Pair',
+    Pair_Type = case_when(
+
+      
+    (Sample_Type.row == 'recipient' & Sample_Type.col == 'donor') | 
+    (Sample_Type.col == 'recipient' & Sample_Type.row == 'donor') ~ 'Pre-FMT/Donor',
+    
+    (Sample_Type.row == 'post' & Sample_Type.col == 'recipient') | 
+    (Sample_Type.col == 'post' & Sample_Type.row == 'recipient') ~ 'Pre-FMT/Post-FMT',
+    
+    (Sample_Type.row == 'post' & Sample_Type.col == 'donor') | 
+    (Sample_Type.col == 'post' & Sample_Type.row == 'donor') ~ 'Donor/Post-FMT',
+    
+    Sample_Type.row == 'recipient' & Sample_Type.col == 'recipient' ~ 'Pre-FMT/Pre-FMT',
+    Sample_Type.row == 'post' & Sample_Type.col == 'post' ~ 'Post-FMT/Post-FMT',
+    Sample_Type.row == 'donor' & Sample_Type.col == 'donor' ~ 'Donor/Donor')) %>% 
+  
+  # label family relationship
+  mutate(Same_Case.label = ifelse(Case_Name.same, 'Same Case', 'Distinct Case'),
+         Same_Study.label = ifelse(Study.same, 'Same Study', 'Distinct Study'),
+         ) %>% 
+  
+  select(Name.paste, contains('n.shared'), starts_with('f.'), ends_with('.pair'), 
+         Related.label, Related.bool, Pair_Type) %>% 
+  mutate(Related.text = ifelse(Related.bool, 'Related', 'Unrelated'))
+```
+
+
+```{r}
+alm_table.n <-
+  alm_table %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = starts_with('n.shared')) %>% 
+  separate(metric, into = c('metric','taxonomic_level','tool'), sep = '[.]') %>% 
+  mutate(taxonomic_level = gsub(taxonomic_level, pattern = 'shared_', replacement = ''),
+         taxonomic_level = gsub(taxonomic_level, pattern = 'strains', replacement = 'strain')) %>% 
+  select(-metric)
+
+alm_table.f <-
+  alm_table %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = starts_with('f.shared')) %>% 
+  separate(metric, into = c('metric','taxonomic_level','tool'), sep = '[.]') %>% 
+  mutate(taxonomic_level = gsub(taxonomic_level, pattern = 'shared_', replacement = ''),
+         taxonomic_level = gsub(taxonomic_level, pattern = 'strains', replacement = 'strain')) %>% 
+  select(-metric)
+```
+
+## Shared Strains n
+Number of shared strains between related and unrelated samples of the ALM rCDI cohort based on CVS, MVS of MetaPhlAn2 alignments and Strain Finder on AMPHORA markers
+```{r fig.width=5, fig.height=5}
+plot.strain_count <-
+
+  alm_table.n %>% 
+  filter(taxonomic_level == 'strain') %>% 
+  
+  mutate(tool = case_when(
+    tool == 'sstr' ~ 'MVS',
+    tool == 'sf' ~ 'SF',
+    tool == 'cvs' ~ 'CVS',
+    T ~ tool)) %>%
+
+  mutate(tool = fct_relevel(tool,'SF','CVS','MVS')) %>%
+
+  ggplot(aes(value, tool, fill = Related.text)) +
+  geom_density_ridges(alpha = 0.75, scale = 4, stat = 'binline', bins = 18) +  
+  scale_x_continuous(expand = c(0,0), 
+                     trans = pseudo_log_trans(1, base = 10),
+                     breaks = c(0, 1, 10, 30, 100, 300)
+) + 
+  theme_cowplot() +
+  labs(x = 'Count [n]') +  
+  scale_fill_manual(values = c('black', 'white')) + 
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(0.6, 0.9))
+
+
+legend <- cowplot::get_legend(plot.strain_count)
+plot.strain_count + theme(legend.position = 'none')
+grid.newpage()
+grid.draw(legend)
+```
+
+Whereas Strain Finder is finding a lot of co-occurring strains in unrelated samples, the consensus approach is very conservative. Compared to SameStr MVS, consensus finds slightly fewer potential false-positives (means ~.45 vs. .22 strains in unrelated samples) but also misses on a large fraction of potential true-positives (means ~15 vs. 8 in related samples)
+```{r}
+alm_table.n %>% 
+  filter(taxonomic_level == 'strain') %>% 
+  ungroup() %>% 
+  mutate(tool = case_when(
+    tool == 'sstr' ~ 'MVS',
+    tool == 'sf' ~ 'SF',
+    tool == 'cvs' ~ 'CVS',
+    T ~ tool)) %>% 
+  select(Name.paste, Related.text, tool, value) %>% 
+  pivot_wider(names_from = 'tool', values_from = 'value') %>% 
+  mutate(`SF-MVS` = SF - MVS) %>% 
+  select(-Name.paste) %>% 
+  group_by(Related.text) %>% 
+  summarize_all(.funs = funs(n(), min, max, median, mean, sd)) %>% 
+  group_by(Related.text) %>%
+  mutate_all(.funs = funs(round(., 2))) %>% 
+  pivot_longer(names_to = 'names', values_to = 'value', cols = matches('.*_.*')) %>% 
+  separate(names, into = c('tool','metric'), sep = '_') %>% 
+  pivot_wider(names_from = 'metric', values_from = 'value')
+```
+	
+Related	
+CVS 7.99±6.83	
+MVS 14.77±11.34	
+SF 78.35±73.50	
+DIFF 93.13±82.59
+
+Unrelated	
+CVS 0.22±0.55	
+MVS 0.45±0.75	
+SF 34.71±37.52	
+DIFF 35.16±37.68
+
+## Shared Strains %
+Fraction of shared strains betweent related and unrelated samples of the ALM rCDI cohort
+```{r fig.width=5, fig.height=5}
+plot.strain_fraction <-
+
+  alm_table.f %>% 
+  filter(taxonomic_level == 'strain') %>% 
+
+  mutate(tool = case_when(
+    tool == 'sstr' ~ 'SameStr MVS/\nMetaPhlAn2', 
+    tool == 'sf' ~ 'StrainFinder/\nmg-OTUs', 
+    tool == 'cvs' ~ 'Consensus/\nMetaPhlAn2', 
+    T ~ tool)) %>% 
+  
+  mutate(tool = fct_relevel(tool,
+    'StrainFinder/\nmg-OTUs', 
+    'Consensus/\nMetaPhlAn2', 
+    'SameStr MVS/\nMetaPhlAn2', 
+  )) %>% 
+
+  ggplot(aes(value, tool, fill = Related.text)) +
+  geom_density_ridges(alpha = 0.75, scale = 4, stat = 'binline', bins = 18) +  
+  scale_x_continuous(expand = c(0,0), 
+                     trans = pseudo_log_trans(base = 10),
+                     labels = percent_format()
+) + 
+  theme_cowplot() +
+  labs(x = 'Taxa Shared between Samples [%]') + 
+  scale_fill_manual(values = c('black', 'white')) + 
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(0.6, 0.9))
+
+plot.strain_fraction + theme(legend.position = 'none')
+```
+
+Exporting Plot
+```{r}
+output_name = 'SharedStrains.Alm'
+
+ggsave(plot.strain_count + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 3.5, height = 3.25,
+       filename = paste0(results_dir, fig, output_name, '.Counts', '.RidgePlot.pdf'))
+ggsave(plot.strain_fraction + theme(legend.position = 'none', axis.line.y = element_blank()), 
+       device = 'pdf', dpi = 300, width = 5, height = 4,
+       filename = paste0(results_dir, fig, output_name, '.Fraction', '.RidgePlot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 5, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+## Shared F>G>Spp. %
+```{r fig.width=10, fig.height=3}
+alm_table %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = starts_with('f.shared')) %>% 
+  separate(metric, into = c('metric','taxonomic_level','tool'), sep = '[.]') %>% 
+  select(-metric) %>% 
+  filter(tool != 'cvs') %>% 
+  mutate(taxonomic_level = str_to_title(gsub(taxonomic_level, pattern = 'shared_', replacement = ''))) %>% 
+  mutate(tool = case_when(tool == 'sstr' ~ 'SameStr/\nMetaPhlAn2', tool == 'sf' ~ 'StrainFinder/\nmg-OTUs', T ~ tool)) %>% 
+
+  ggplot(aes(value, tool, fill = Related.text)) +
+  geom_density_ridges(alpha = 0.75, scale = 3) + 
+  scale_x_continuous(limits = c(0, 1), labels = percent_format(), expand = c(0,0)) + 
+  theme_cowplot() +
+  labs(x = 'Fraction of Taxa Shared between Samples') + 
+  scale_fill_manual(values = c('black', 'white')) + 
+  facet_wrap(~taxonomic_level, nrow = 1, scales = 'free_x') + 
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank(),
+        legend.title = element_blank(),
+        legend.position = c(0.8, 0.9))
+```
+
+
+
+# Sensitivity of Taxa Detection
+
+## Format
+Comparison of genera found with MP2/Amphora
+```{r}
+counts <-
+  full_join(sf_genus_counts, sf_species_counts, by = 'Sample') %>%  
+  mutate(Name = paste0('ALM_', Sample, '.pair')) %>% 
+  full_join(., taxa_counts %>% 
+              rename(Name = 'Sample') %>% select(-n.family), 
+            by = 'Name', suffix = c('.sf','.mp')) %>% 
+  filter(!is.na(n.species.mp), !is.na(n.species.sf))
+```
+
+```{r fig.height=3, fig.width=3}
+lm_eqn <- function(df){
+    m <- lm(mp ~ sf, df);
+    eq <- substitute(italic(y) == a + b %.% italic(x)*","~~italic(r)~"="~rv, 
+         list(a = format(unname(coef(m)[1]), digits = 2),
+              b = format(unname(coef(m)[2]), digits = 2),
+             rv = format(sqrt(summary(m)$r.squared), digits = 2)))
+    as.character(as.expression(eq));
+}
+counts.data <- counts %>% 
+  pivot_longer(names_to = 'metric', values_to = 'n', cols = starts_with('n.')) %>% 
+  separate(metric, into = c('metric','taxonomic_level','tool'), sep = '[.]') %>% 
+  select(-metric) %>% 
+  pivot_wider(names_from = 'tool', values_from = 'n') %>% 
+  mutate(difference = mp - sf) 
+
+counts.data.genus <-
+  counts.data %>% 
+  filter(taxonomic_level == 'genus')
+
+counts.data.species <-
+  counts.data %>% 
+  filter(taxonomic_level == 'species')
+```
+
+```{r}
+get_stats <- function(df, digits = 2) {
+  df.mean <- mean(df, na.rm = T)
+  df.sd <- sd(df, na.rm = T)
+  df.format <- paste('µ=', round(df.mean, digits = digits),  '±', round(df.sd, digits = digits), sep = '')
+  return(
+    list(
+      'mean' = df.mean, 
+      'sd' = df.sd,
+      'format' = df.format))
+}
+digits = 1
+stats.g.diff <- get_stats(counts.data.genus$difference, digits = digits)
+stats.g.mp <- get_stats(counts.data.genus$mp, digits = digits)
+stats.g.sf <- get_stats(counts.data.genus$sf, digits = digits)
+stats.s.diff <- get_stats(counts.data.species$difference, digits = digits)
+stats.s.mp <- get_stats(counts.data.species$mp, digits = digits)
+stats.s.sf <- get_stats(counts.data.species$sf, digits = digits)
+
+```
+
+## Statistics
+```{r}
+counts.data %>% 
+  select(-Sample, -Name) %>% 
+  group_by(taxonomic_level) %>% 
+  summarize_all(.funs = funs(mean, sd)) %>% 
+  select(taxonomic_level, starts_with('sf_'), starts_with('mp_'), starts_with('dif')) %>% 
+  mutate_at(.vars = vars(everything(), -taxonomic_level),
+            .funs = funs(round(., digits = 2)))
+```
+genus: 
+sf = 23.78 +- 16.67
+mp = 50.54 +- 15.0
+
+species:
+sf = 48.48 +- 33.88
+mp = 97.62 +- 39.6
+## Detected Taxa per Sample
+```{r fig.height=3.5, fig.width=3.5}
+yy.s = 80
+yy.g = 30
+nudge = 70
+
+plot <-
+  counts.data %>% 
+  ggplot(aes(y = mp, x = sf, fill = taxonomic_level)) +
+  geom_point(shape = 21, col = 'black', size = 5) +
+
+  annotate(geom = 'text', y = yy.s, x = yy.s + nudge + 5, label = stats.s.diff$format, size = 5, parse = F) +
+  annotate(geom = 'text', y = yy.g, x = yy.g + nudge, label = stats.g.diff$format, size = 5, parse = F) +
+  
+  annotate("segment", show.legend = F, 
+           arrow = arrow(length = unit(0.3, "cm"), type = "closed"), size = 1, col = 'black',
+   y=yy.s, yend=yy.s + stats.s.diff$mean, x=yy.s, xend=yy.s) + 
+  annotate("segment", show.legend = F, 
+           arrow = arrow(length = unit(0.3, "cm"), type = "closed"), size = 1, col = 'black',
+   y=yy.g, yend=yy.g + stats.g.diff$mean, x=yy.g, xend=yy.g) + 
+    
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed') + 
+  
+  theme_cowplot() +
+  scale_x_continuous(limits = c(0, 200)) + 
+  scale_y_continuous(limits = c(0, 200)) + 
+  scale_fill_manual(values = c('grey25', 'white')) +
+  scale_color_manual(values = c('black', 'black')) + 
+  theme(aspect.ratio = 1,
+        plot.subtitle = element_text(hjust = 0.5), 
+        legend.title = element_blank(), 
+        legend.position = c(0.02, 0.9)) +
+  labs(y = 'SameStr / MetaPhlAn2', x = 'Strain Finder / mg-OTUs', subtitle = 'Detected Taxa per Sample')
+plot
+```
+
+Exporting Plot
+```{r}
+output_name = 'DetectedTaxa.Species.Alm'
+
+ggsave(plot, 
+       device = 'pdf', dpi = 300, width = 3.75, height = 3.75,
+       filename = paste0(results_dir, fig, output_name, '.CorrPlot.pdf'))
+```
+
+## Taxa Differences
+
+Number of detected mg-OTUs:
+species == 306
+genus == 116
+```{r}
+sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>% 
+  pivot_longer(names_to = 'tax', values_to = 'rel_abund', cols = starts_with('BACT')) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  select(-gdna) %>% 
+  group_by(bact) %>% 
+  summarize(present = as.numeric(sum(rel_abund, na.rm = T) > 0)) %>% 
+  summarize(count = sum(present, na.rm = T)) 
+
+sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>%
+  pivot_longer(names_to = 'tax', values_to = 'rel_abund', cols = starts_with('BACT')) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  select(-gdna) %>% 
+  group_by(Sample, bact) %>% 
+  summarize(rel_abund = as.numeric(sum(rel_abund, na.rm = T) > 0)) %>% 
+  left_join(., sf_species_table %>% select(bact, genus), by = 'bact') %>% 
+  group_by(genus) %>% 
+  summarize(present = as.numeric(sum(rel_abund, na.rm = T) > 0)) %>% 
+  summarize(count = sum(present, na.rm = T)) 
+```
+
+Number of detected MetaPhlAn2 species:
+species == 399
+genus == 154
+```{r}
+mp_species.long %>% 
+  select(species, Name, rel_abund) %>% 
+  filter(grepl(Name, pattern = '^ALM'), rel_abund > 0) %>% 
+  filter(!grepl(species, pattern = 'unclassified')) %>% 
+  group_by(species) %>% 
+  summarize(present = sum(rel_abund > 0, na.rm = T)) %>% 
+  summarize(count = sum(present > 0, na.rm = T))
+
+mp_species.long %>% 
+  select(genus, Name, rel_abund) %>% 
+  filter(grepl(Name, pattern = '^ALM'), rel_abund > 0) %>% 
+  filter(!grepl(genus, pattern = 'unclassified')) %>% 
+  group_by(genus) %>% 
+  summarize(present = sum(rel_abund > 0, na.rm = T)) %>% 
+  summarize(count = sum(present > 0, na.rm = T))
+```
+### Format
+```{r}
+found_sf <-
+  sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > 0))) %>%
+  pivot_longer(names_to = 'tax', values_to = 'rel_abund', cols = starts_with('BACT')) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  select(-gdna) %>% 
+  group_by(Sample, bact) %>% 
+  summarize(rel_abund = as.numeric(sum(rel_abund, na.rm = T) > 0), .groups = 'drop') %>% 
+  left_join(., sf_species_table %>% select(bact, genome, genus), by = 'bact') %>% 
+  group_by(Sample, genus) %>% 
+  summarize(species_count.sf = sum(rel_abund, na.rm = T), .groups = 'drop')
+found_mp <-
+  mp_species.long %>% 
+  select(genus, species, Name, rel_abund) %>% 
+  filter(grepl(Name, pattern = '^ALM'), rel_abund > 0) %>% 
+  mutate(genus = gsub(genus, pattern = '_noname', replacement = '')) %>% 
+  group_by(genus, Name) %>% 
+  summarize(species_count.mp = sum(rel_abund > 0, na.rm =T), .groups = 'drop') %>% 
+  mutate(Sample = gsub(str_split_fixed(Name, pattern = '_', 2)[,2], pattern = '.pair', replacement = '')) %>% 
+  select(-Name)
+
+taxa.genus.important <-
+  full_join(found_sf, found_mp) %>% 
+  mutate_at(.vars = vars(starts_with('species_count')),
+            .funs = funs(ifelse(is.na(.), 0, .))) %>% 
+  group_by(genus) %>% 
+  summarize(species_count.sf = sum(species_count.sf, na.rm = T), 
+            species_count.mp = sum(species_count.mp, na.rm = T), .groups = 'drop') %>% 
+  mutate(total = species_count.mp + species_count.sf) %>% 
+  arrange(desc(total)) %>% 
+  top_n(30, total) %>% 
+  pull(genus)
+
+found <- 
+  full_join(found_sf, found_mp) %>% 
+  mutate_at(.vars = vars(starts_with('species_count')),
+            .funs = funs(ifelse(is.na(.), 0, .))) %>% 
+  filter(genus %in% taxa.genus.important)
+```
+
+
+### Ridge Plot
+```{r fig.width=6, fig.height=6}
+plot <- 
+  found %>% 
+  pivot_longer(names_to = 'metric', values_to = 'count', cols = c('species_count.sf', 'species_count.mp')) %>% 
+  mutate(metric = case_when(
+    metric == 'species_count.sf' ~ 'mg-OTUs', 
+    metric == 'species_count.mp' ~ 'MetaPhlAn2', 
+  )) %>% 
+
+  ggplot(aes(count, genus, fill = metric)) + 
+  geom_density_ridges(panel_scaling = F, alpha = 0.75, scale = 2) + 
+  scale_x_continuous(trans = pseudo_log_trans()) + 
+  labs(x = 'Detected Species') + 
+  theme_cowplot() + 
+  theme(axis.title.y = element_blank()) +
+  scale_fill_manual(values = c('black','white')) 
+
+plot + theme(legend.position = 'none')
+
+legend <- cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+Exporting Plot
+```{r}
+output_name = 'DetectedTaxa.Species.Alm'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 4, height = 6,
+       filename = paste0(results_dir, fig, output_name, '.RidgePlot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 1.25, height = 1.5,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+```{r}
+found %>% 
+  ungroup() %>% 
+  select(-Sample) %>% 
+  group_by(genus) %>% 
+  summarize_all(.funs = funs(mean, sd)) %>% 
+  mutate(diff = species_count.sf_mean - species_count.mp_mean) %>% 
+  group_by(genus) %>% 
+  mutate_all(.funs = funs(round(., 2))) %>% 
+  ungroup() %>% 
+  rename_at(.vars = vars(starts_with('species_')), 
+            .funs = funs(gsub(., pattern = 'species_count.', replacement = ''))) %>% 
+  select(genus, starts_with('sf'), starts_with('mp'), diff) %>% 
+  arrange(diff) %>% 
+  head(10)
+```
+Genus SF vs. MP
+----------------
+Streptococcus	2.68±4.02	vs. 8.15±2.90	(-5.47)
+Lachnospiraceae	0.00±0.00	vs. 4.83±2.54	(-4.83)
+Bacteroides	3.87±4.70	vs. 8.44±4.70	(-4.57)
+Lactobacillus	1.41±2.37	vs. 5.89±2.69	(-4.48)
+Clostridium	2.43±3.25	vs. 6.18±3.57	(-3.75)
+
+# SF Majority Strain
+
+```{r}
+sf_min_abund <- function(min_abund) {
+
+  sf_strain_table.matrix <-
+  sf_strain_table %>% 
+  mutate_at(.vars = vars(everything(), -Sample), 
+            .funs = funs(as.numeric(. > min_abund))) %>% # set > .5 filter here to compare SF majority strains
+  column_to_rownames('Sample') %>% 
+  as.matrix()
+
+colnames(sf_strain_table.matrix) <- 
+  tibble(tax = colnames(sf_strain_table.matrix)) %>% 
+  separate(col = tax, into = c('bact', 'gdna'), sep = ';') %>% 
+  group_by(bact) %>% 
+  mutate(strain_id = paste0(bact, '.', dense_rank(gdna))) %>% 
+  pull(strain_id)
+
+# strain
+sf_strain_table.dist <- sf_strain_table.matrix %*% t(sf_strain_table.matrix)
+sf_strain_table.long <- 
+  distmat_to_long(distmat = as.data.frame(sf_strain_table.dist), 
+                  value_name = paste0('n.shared_strains.', 'min_abund_', min_abund),
+                  rm_diag = T)
+return(sf_strain_table.long)
+}
+
+df <- sf_min_abund(0)
+for (m in c(5e-3, 5e-2, 5e-1)) {
+  df <- full_join(df, sf_min_abund(m), by = c('row','col')) 
+}
+
+
+related.v <-
+  alm_table.n %>% 
+  filter(taxonomic_level == 'strain', tool == 'sf') %>% 
+  select(Name.paste, Related.text)
+
+sf <-
+  df %>% 
+  
+  rename(Sample.row = row, 
+         Sample.col = col, 
+         ) %>% 
+  
+  rename_at(.vars = vars(matches('n.*col'), matches('n.*row')),
+            .funs = funs(gsub(gsub(., pattern = '.row', replacement = '.sf.row'), 
+                              pattern = '.col', replacement = '.sf.col'))) %>%
+  left_join(., samples.metadata, by = c('Sample.row' = 'Sample')) %>% 
+  left_join(., samples.metadata, by = c('Sample.col' = 'Sample'), suffix = c('.row', '.col')) %>% 
+  filter(!is.na(Name.row), !is.na(Name.col)) %>% 
+  rowwise() %>% 
+  mutate(Name.paste = paste0(sort(c(Name.row, Name.col)), collapse = ',')) %>% 
+  ungroup() %>% 
+  left_join(., related.v) %>% 
+  # mutate(related = ifelse(replace_na(Donor.Subject.row == Donor.Subject.col, F), 'Related', 'Unrelated')) %>% 
+  pivot_longer(names_to = 'metric', values_to = 'value', 
+               cols = starts_with('n.shared_strains')) %>% 
+  separate(metric, into = c('metric','min_abund'), sep = '.abund_') %>% 
+  mutate(min_abund = as.numeric(min_abund))
+  
+```
+
+Strain Finder shows a high number of cooccurring strains in unrelated sample pairs. Cooccurrence distributions of related / unrelated sample pairs overlap widely, even when considering only strains that were detected at >=50% strain abundance in the species population - a problem that might be due to the amphora markers.
+```{r fig.width=3.5, fig.height=3.5}
+plot <- 
+  sf %>% 
+  
+  mutate(metric = paste0('>=', round(min_abund * 100, 5), '%')) %>% 
+
+  ggplot(aes(value, fct_reorder(metric, min_abund, .desc = T), fill = Related.text)) + 
+  geom_density_ridges(alpha = 0.75, scale = 2) +
+  scale_fill_manual(values = c('black','white')) +
+  scale_x_continuous(expand = c(0,0), 
+                     trans = pseudo_log_trans(1, base = 10),
+                     breaks = c(0, 1, 10, 30, 100, 300)
+) + 
+  theme_cowplot() +
+  theme(aspect.ratio = 1) + 
+  labs(x = 'Shared Strains', y = 'Strain Finder\nStrain Abundance') +
+  theme(legend.title = element_blank(),
+        legend.position = 'top')
+plot
+```
+
+Exporting plot
+```{r}
+output_name = 'StrainFinder.StrainCooccurrence'
+
+ggsave(plot, 
+       device = 'pdf', dpi = 300, width = 4, height = 4,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+# Mock Multi-Strain Species Population
+Detecting strains hidden in Mock Multi-Strain Species Population with varying numbers of strains, target coverage, noise coverage and total coverage.
+
+## Format
+```{r}
+percent_format_signif <-
+  function(x, label.precision=3, label.percent=T) {
+    if (label.percent == T) {
+      paste0(signif(100 * x, label.precision), "%")
+    } else {
+      signif(digits = label.precision)
+    }
+  }
+```
+
+Calculate metrics
+```{r fig.width=5,fig.height=2.5}
+df <- 
+  mock.sstr_data %>% 
+
+  pivot_longer(names_to = 'metric', 
+               values_to = 'distance', 
+               cols = c('distance.mvs', 'distance.cvs')) %>% 
+  mutate(shared = distance > min_similarity & overlap > min_overlap, 
+         should = tsc > 0,
+         TP = shared & should,
+         FP = shared & !should, 
+         TN = !shared & !should, 
+         FN = !shared & should, 
+         event = case_when(
+           TP ~ 'TP', 
+           FP ~ 'FP', 
+           TN ~ 'TN', 
+           FN ~ 'FN',
+           T ~ 'Unknown'
+         )) %>% 
+  mutate(metric = case_when(
+    metric == 'distance.cvs' ~ 'Consensus (CVS)',
+    metric == 'distance.mvs' ~ 'SameStr (MVS)',
+    T ~ 'Unknown'
+  )) %>% 
+  group_by(metric, tsc, ngc, total_coverage, rel_abund.target) %>% 
+  summarize(TP = sum(TP, na.rm = T), 
+            FP = sum(FP, na.rm = T), 
+            TN = sum(TN, na.rm = T),
+            FN = sum(FN, na.rm = T), 
+            .groups = 'drop') %>% 
+  mutate(Precision = TP / (TP + FP), 
+    Recall = TP / (TP + FN), 
+    `Precision/Recall` = Precision / Recall, 
+    Accuracy = (TP+TN)/(TP+FP+FN+TN),
+    `Error Rate` = 1 - Accuracy)
+```
+
+N Mock Observations
+```{r}
+nrow(mock.sstr_data)
+```
+
+## Accuracy Heatmap
+```{r fig.width = 5, fig.height = 3}
+plot <-
+  df %>% 
+  mutate(`Error Rate` = 
+         Hmisc::cut2(`Error Rate`, 
+                   cuts = seq(0, 1, 0.2), 
+                   minmax = T, 
+                   formatfun = scales::percent, 
+                   oneval = F) %>% 
+         as.character() %>% 
+         gsub(pattern = '\\[', replacement = '') %>% 
+         gsub(pattern = '\\]', replacement = '') %>% 
+         gsub(pattern = '\\)', replacement = '') %>% 
+         gsub(pattern = ',', replacement = '-')) %>% 
+  filter(ngc > 0) %>% 
+  ggplot(aes(
+    tsc, 
+    as.factor(ngc))
+    ) +  
+  geom_tile(aes(fill = `Error Rate`), col = 'black') +
+  scale_x_continuous(expand = c(0,0),
+                     breaks = seq(0, 20, 4)) + 
+  scale_y_discrete(expand = c(0,0)) + 
+  facet_wrap(~ metric, scales = 'free_y') +
+  theme_cowplot() + 
+  theme(aspect.ratio = 1,
+        strip.background = element_blank(),
+        panel.spacing.x = unit(1, "lines"),
+        axis.text = element_text(size = 9),
+        axis.title = element_text(size = 12),
+        axis.title.x = element_text(hjust = 0.5),
+        legend.position = 'right',
+        legend.title = element_text(size = 12),
+        legend.key = element_rect(colour = "black")) + 
+  labs(x = 'Mean Fold-Coverage of the Target Strain', 
+       y = 'Noise Coverage') + 
+  scale_fill_manual(values = c('white', 'gray75', 'gray50', 'gray25', 'black'))
+
+plot + theme(legend.position = 'none')
+
+legend <- cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+
+Exporting Plot
+```{r}
+output_name = 'AccuracyHeatmap.Mock'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 5.5, height = 3,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 1.25, height = 1.5,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+Comparison of average detection accuracy using Consensus vs. SameStr MVS with at least 5x coverage when target strain is dominant (>50% species population) or sub-dominant (15-50% species population)
+```{r}
+df %>% 
+  mutate(miss_rate = TP / (FN + TP)) %>% 
+  filter(rel_abund.target > .5, total_coverage > 5) %>% 
+  group_by(metric) %>% 
+  summarize(Accuracy = 1 - mean(`Error Rate`, na.rm = T))
+
+df %>% 
+  filter(rel_abund.target > .15) %>% 
+  filter(rel_abund.target <= .5, total_coverage > 5) %>%
+  group_by(metric) %>% 
+  summarize(Accuracy = 1 - mean(`Error Rate`, na.rm = T))
+```
+
+# Phylogenetic Resolution of MP Markers
+Comparing full-genome based Fast-ANI scores to MetaPhlAn2 based similarity
+
+## Reference Genomes
+Similarity Distribution of Reference Genomes
+```{r fig.width=7, fig.height=9}
+percent_format_signif <- function(x, label.precision=3, label.percent=T) {
+    if (label.percent == T) {
+      paste0(signif(100 * x, label.precision), "%")
+    } else {
+      signif(digits = label.precision)
+    }
+}
+
+species_ridge <-
+  refs %>% 
+  filter(distance > .97 | ani > .97) %>%
+  pivot_longer(values_to = 'value', names_to = 'metric', cols = c('distance', 'ani')) %>% 
+  mutate(metric = case_when(
+    metric == 'distance' ~ 'Nucleotide Similarity of\nMetaPhlAn2 Markers',
+    metric == 'ani' ~ 'fastANI Identity of\nFull Sequences',
+    T ~ metric
+  )) %>% 
+  ggplot(aes(x = value, 
+             y = fct_reorder(genus, genus_avg_marker_len), 
+             group = species, 
+             fill = species)) +
+  geom_density_ridges(scale = 3, 
+                     alpha = 0.5, stat = 'binline', show.legend = F,
+                     ) + 
+  scale_x_reverse(labels = percent_format_signif, 
+                  breaks=c(min_similarity, 0.99, 0.98, 0.97),
+                  limits = c(NA, 0.97), 
+                  expand = c(0.1, 0)) +
+  theme_cowplot() + 
+  geom_vline(xintercept = min_similarity, show.legend = T, linetype = 'dashed') + 
+  guides(fill = guide_legend(ncol = 1)) +
+  labs(x = 'Sequence Identity') +
+  facet_grid(cols = vars(metric)) +
+  theme(strip.background = element_blank(),
+        axis.title.y = element_blank())
+
+species_ridge
+
+refs %>% 
+  pivot_longer(values_to = 'value', names_to = 'metric', cols = c('distance', 'ani')) %>% 
+  group_by(metric) %>% 
+  summarize(not_shared = sum(value < min_similarity, na.rm = T),
+            shared = sum(value > min_similarity, na.rm = T)) %>% 
+  mutate(total = not_shared + shared,
+         rate = shared / total * 100)
+```
+
+Correlation of MP marker vs. fastANI based similarity
+```{r fig.width=4,fig.height=4}
+min = .97
+refs.cor <- 
+  cor.test(~ ani + distance,
+           data = refs %>% 
+             filter(!is.na(ani), !is.na(distance)) %>%
+             filter(ani > min & distance > min),
+           method = 'spearman') %>% 
+  broom::tidy(.) %>% 
+  mutate(estimate.round = round(estimate, 2), 
+         sig = cut(p.value, 
+                   breaks = c(-Inf, 0.001, 0.01, 0.05, Inf),
+                   labels = c("***", "**", "*", "")))
+refs.cor
+
+plot.scatter <-
+  ggscatter(data = refs %>% 
+  filter(!is.na(ani), !is.na(distance)) %>%
+  filter(ani > min & distance > min),
+  'ani', 'distance', 
+  color = 'black',  
+  fill = 'black',
+  alpha = 0.025,
+  xlab = 'Full-Sequence fastANI', ylab = 'MetaPhlAn2 Markers',
+  ggtheme = theme_cowplot()) + 
+  theme(aspect.ratio = 1) +
+  scale_x_continuous(labels = percent_format_signif, breaks=c(min_similarity, 0.99, 0.98, 0.97)) +
+  scale_y_continuous(labels = percent_format_signif, breaks=c(min_similarity, 0.99, 0.98, 0.97)) + 
+  annotate('text', label = paste0('r=', 
+                                  refs.cor$estimate.round,
+                                  ' ', 
+                                  refs.cor$sig), 
+           hjust = 0, 
+           x = .97, y = .999, size = 6) + 
+  geom_density_2d(col = 'black')
+
+plot <-
+  ggExtra::ggMarginal(plot.scatter, 
+                            type = 'density', color = 'black',
+                            fill = 'grey75', size = 10)
+plot
+```
+
+Exporting Plots
+```{r}
+output_name = 'MetaPhlAn2_FastANI.References'
+ggsave(species_ridge, 
+       device = 'pdf', dpi = 300, width = 6, height = 8,
+       filename = paste0(results_dir, fig, output_name, '.RidgePlot.pdf'))
+
+ggsave(plot, 
+       device = 'pdf', dpi = 300, width = 4, height = 4,
+       filename = paste0(results_dir, fig, output_name, '.CorrPlot.pdf'))
+```

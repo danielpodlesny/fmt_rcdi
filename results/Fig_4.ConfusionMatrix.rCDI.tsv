@@ -1,0 +1,17 @@
+Pair_Type	Related.label	fmt_success	TP	FP	FN	TN	Acc
+Donor/Donor	Distinct Subject	TRUE	0	0	0	101	1
+Donor/Donor	Same Donor	TRUE	4	0	0	0	1
+Donor/Post-FMT	Distinct Subject	TRUE	0	0	0	664	1
+Donor/Post-FMT	Same Case	FALSE	10	0	1	0	0.9090909090909091
+Donor/Post-FMT	Same Case	TRUE	36	0	5	0	0.8780487804878049
+Donor/Post-FMT	Same Donor	TRUE	58	0	6	0	0.90625
+Post-FMT/Post-FMT	Distinct Subject	TRUE	0	0	0	911	1
+Post-FMT/Post-FMT	Same Case	FALSE	6	0	0	0	1
+Post-FMT/Post-FMT	Same Case	TRUE	37	0	2	0	0.9487179487179487
+Post-FMT/Post-FMT	Same Donor	TRUE	292	0	78	0	0.7891891891891892
+Pre-FMT/Donor	Distinct Subject	FALSE	0	0	0	6	1
+Pre-FMT/Donor	Distinct Subject	TRUE	0	0	0	369	1
+Pre-FMT/Post-FMT	Distinct Subject	TRUE	0	2	0	1253	0.998406374501992
+Pre-FMT/Post-FMT	Same Subject	FALSE	10	0	1	0	0.9090909090909091
+Pre-FMT/Post-FMT	Same Subject	TRUE	17	0	17	0	0.5
+Pre-FMT/Pre-FMT	Distinct Subject	TRUE	0	0	0	300	1

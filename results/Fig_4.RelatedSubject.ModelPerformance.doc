@@ -1,0 +1,39 @@
+<table style="border-collapse:collapse; border:none;">
+<caption style="font-weight: bold; text-align:left;">Logistic Regression Model Performance</caption>
+<tr>
+<th style="border-top: double; text-align:center; font-style:italic; font-weight:normal; padding:0.2cm; border-bottom:1px solid black; text-align:left; ">model</th>
+<th style="border-top: double; text-align:center; font-style:italic; font-weight:normal; padding:0.2cm; border-bottom:1px solid black; ">control.auROC</th>
+<th style="border-top: double; text-align:center; font-style:italic; font-weight:normal; padding:0.2cm; border-bottom:1px solid black; ">control.auPR</th>
+<th style="border-top: double; text-align:center; font-style:italic; font-weight:normal; padding:0.2cm; border-bottom:1px solid black; ">rcdi.auROC</th>
+<th style="border-top: double; text-align:center; font-style:italic; font-weight:normal; padding:0.2cm; border-bottom:1px solid black; ">rcdi.auPR</th>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">family</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.7740</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.0583</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.7600</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.4466</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">genus</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.8684</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.1898</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.7954</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.5315</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; ">species</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.9302</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.4745</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.8469</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; ">0.6528</td>
+</tr>
+<tr>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:left; border-bottom: double; ">strain</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; border-bottom: double; ">1.0000</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; border-bottom: double; ">1.0000</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; border-bottom: double; ">0.9337</td>
+<td style=" padding:0.2cm; text-align:left; vertical-align:top; text-align:center; border-bottom: double; ">0.9380</td>
+</tr>
+</table>
+

@@ -1,0 +1,1445 @@
+---
+title: "Publication Figure 4"
+output:
+  html_notebook:
+    code_folding: hide
+    theme: united
+    toc: yes
+    toc_depth: 2
+    toc_float: true
+    toc_collapsed: false
+theme: cosmo
+---
+
+
+# Libraries
+Standard Import
+```{r message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot)
+library(scales)
+library(ggpubr)
+```
+
+Special
+```{r}
+library(caret)
+library(plotROC)
+library(tidymodels)
+library(grid)
+library(sjPlot)
+```
+
+# Paths
+```{r}
+bin_dir = '../bin/'
+data_dir = '../data/'
+results_dir = '../results/'
+```
+
+# Custom Scripts / Theme
+```{r}
+source(paste0(bin_dir, 'theme_settings.R'))
+source (paste0(bin_dir, 'utilities.R'))
+source(paste0(bin_dir, 'species_competition_functions.R'))
+source(paste0(bin_dir, 'distmat_utils.R'))
+source(paste0(bin_dir, 'analysis_metadata.R'))
+date <- format(Sys.time(), "%d%m%y")
+```
+
+# Import Tables
+Metadata
+```{r message=FALSE, warning=FALSE}
+samples.metadata <- read_tsv(paste0(data_dir, 'samples.metadata.tsv'))
+microbe.taxonomy <- read_tsv(paste0(data_dir, 'microbe.taxonomy.tsv'))
+microbe.metadata <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'microbe.metadata.tsv'))) 
+```
+
+## Taxonomy
+MetaPhlAn2 tables
+combine with taxonomy
+```{r message=FALSE, warning=FALSE}
+mp_species.long <- microbe.taxonomy %>% 
+  right_join(., read_tsv(paste0(data_dir, 'samples.mp_profiles.species.tsv')), 
+             by = 'species') %>% 
+  left_join(., samples.metadata, by = 'Name')
+```
+
+rCDI subset
+annotate with metadata
+```{r}
+mp_species.rcdi.long <- 
+  mp_species.long %>%
+  filter(Study %in% c(rcdi.studies)) 
+```
+
+## SameStr Data
+SameStr Case-Summary table
+```{r message=FALSE, warning=FALSE}
+samples.sstr_data <- read_tsv(paste0(data_dir, 'samples.sstr_data_wmetadata.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+## Case Summary
+SameStr Case-Summary table
+```{r message=FALSE, warning=FALSE}
+sstr_cases <- read_tsv(paste0(data_dir, 'samples.case_summary.tsv')) %>% 
+  left_join(., microbe.taxonomy, by = 'species')
+```
+
+# Functions
+```{r}
+precision <- function(matrix) {
+    tp <- matrix[2, 2]
+    fp <- matrix[1, 2]
+    return (tp / (tp + fp))
+}
+recall <- function(matrix) {
+    tp <- matrix[2, 2]
+    fn <- matrix[2, 1]
+    return (tp / (tp + fn))
+}
+```
+
+# Set Figure
+```{r}
+fig = paste0('Fig_4.')
+```
+
+# Identify Individuals
+Identifying related sample pairs coming from the same individual (controls) or from related biological context (rCDI) based on the number and fraction of shared family, genera, species and strains.
+
+## Format
+Generate MetaPhlAn co-occurrence table, taxa counts
+```{r}
+cooccurrence <- mp_cooccurrence(mp_species.long)
+taxa_counts <- cooccurrence$mp_taxa_counts
+taxa_cooccurrence <- cooccurrence$mp_taxa_table.long
+```
+
+Merge with SameStr strain-level data
+```{r}
+sstr <-
+  samples.sstr_data %>% 
+  
+  group_by(Study.pair, Name.row, Name.col, 
+           Days_Since_FMT.row, Days_Since_FMT.col,
+           Case_Name.pair, Case_Name.row, Case_Name.col, Same_Case.label, 
+           Related.label, Related.bool, Pair_Type) %>%
+  summarize(.groups = 'drop',
+            n.analyzed_strains = sum(overlap > min_overlap, na.rm = T),
+            n.shared_strains.mvs = sum(distance.mvs > min_similarity & overlap > min_overlap, na.rm = T),
+            n.shared_strains.cvs = sum(distance.cvs > min_similarity & overlap > min_overlap, na.rm = T)) %>%
+
+  # tag successful fmt cases
+  mutate(fmt_success = !Case_Name.pair %in% cases_failed) %>% 
+  mutate(Study.row = str_split_fixed(Name.row, pattern = '_', 2)[,1], 
+         Study.col = str_split_fixed(Name.col, pattern = '_', 2)[,1]) %>% 
+  mutate(Related.text = ifelse(Related.bool, 'Related', 'Unrelated')) %>% 
+
+  rowwise() %>%
+  mutate(Sample_Pair = paste0(sort(c(Name.row, Name.col)), collapse = ',')) %>% 
+  ungroup() %>% 
+  left_join(., taxa_cooccurrence, by = 'Sample_Pair') %>% 
+  left_join(., taxa_counts, by = c('Name.row' = 'Sample')) %>% 
+  left_join(., taxa_counts, by = c('Name.row' = 'Sample'), suffix = c('.row','.col')) %>% 
+  
+  mutate(n.not_shared_species = (n.species.row - n.shared_species) + (n.species.col - n.shared_species), 
+         n.not_shared_genus = (n.genus.row - n.shared_genus) + (n.genus.col - n.shared_genus), 
+         n.not_shared_family = (n.family.row - n.shared_family) + (n.family.col - n.shared_family), 
+
+         n.total_species = n.shared_species + n.not_shared_species, 
+         n.total_genus = n.shared_genus + n.not_shared_genus, 
+         n.total_family = n.shared_family + n.not_shared_family, 
+
+         f.shared_strains.mvs = replace_na(n.shared_strains.mvs / n.analyzed_strains, 0), 
+         f.shared_strains.cvs = replace_na(n.shared_strains.cvs / n.analyzed_strains, 0), 
+         f.shared_species = n.shared_species / n.total_species,
+         f.shared_genus = n.shared_genus / n.total_genus, 
+         f.shared_family = n.shared_family / n.total_family)
+  
+```
+
+Subset rCDI and Controls
+```{r}
+# filter only healthy controls
+sstr.control <-
+  sstr %>% 
+  filter(Study.row %in% control.studies &
+         Study.col %in% control.studies)
+
+sstr.rcdi <- 
+  sstr %>% 
+  filter(Study.row %in% rcdi.studies &
+         Study.col %in% rcdi.studies)
+
+sstr.louiss <-
+  sstr %>% 
+  filter(Study.row == 'LOUISS',
+         Study.col == 'LOUISS')
+```
+
+## Logistic Regression Model
+
+### Train on Control
+Model on train data of healthy controls
+```{r}
+set.seed(50)
+# 60% train / 40% test
+trainIndex <- caret::createDataPartition(sstr.control$Related.bool, p = .6, 
+                                  list = FALSE, 
+                                  times = 1)[,1]
+train <- sstr.control[ trainIndex,]
+test <- sstr.control[-trainIndex,]
+
+fit.norm.strain.all <-
+  glm(Related.bool ~ n.total_species + 
+        f.shared_strains.mvs + n.shared_strains.mvs +
+        f.shared_species + n.shared_species +
+        f.shared_genus + n.shared_genus +
+        f.shared_family + n.shared_family, 
+      data = train, family = binomial(link = 'logit'))
+
+# normal models
+fit.norm.strain <-
+  glm(Related.bool ~ f.shared_strains.mvs + n.shared_strains.mvs + n.analyzed_strains, 
+      data = train, family = binomial(link = 'logit'))
+fit.norm.species <-
+  glm(Related.bool ~ f.shared_species + n.shared_species + n.total_species, 
+      data = train, family = binomial(link = 'logit'))
+fit.norm.genus <-
+  glm(Related.bool ~ f.shared_genus + n.shared_genus + n.total_genus, 
+      data = train, family = binomial(link = 'logit'))
+fit.norm.family <-
+  glm(Related.bool ~ f.shared_family + n.shared_family + n.total_family, 
+      data = train, family = binomial(link = 'logit'))
+```
+
+### Test on Control
+prediction on test data of healthy controls
+```{r}
+test$pred.norm.strain <- predict(fit.norm.strain, test, type = 'response')
+test$pred.norm.strain.all <- predict(fit.norm.strain.all, test, type = 'response')
+test$pred.norm.species <- predict(fit.norm.species, test, type = 'response')
+test$pred.norm.genus <- predict(fit.norm.genus, test, type = 'response')
+test$pred.norm.family <- predict(fit.norm.family, test, type = 'response')
+
+test.long <-
+  test %>% 
+  pivot_longer(names_to = 'model', values_to = 'M', 
+         cols = c('pred.norm.strain',
+         # pred.norm.strain.all,
+         'pred.norm.species',
+         'pred.norm.genus',
+         'pred.norm.family'))
+```
+
+#### Performance
+PR with yardstick from tidymodels
+```{r fig.height=3.5, fig.width=3.5, warning=FALSE}
+options(yardstick.event_first = FALSE)
+
+c.d1 <-
+  test.long %>% 
+  mutate(model = gsub(model, pattern = 'pred.norm.', replacement = ''),
+         model = fct_relevel(model, 'family', 'genus', 'species', 'strain'))
+
+c.d2 <-
+  c.d1 %>% 
+  group_by(model) %>% 
+  pr_curve(data = ., truth = as.factor(Related.bool), M)
+
+c.d3 <-
+  c.d1 %>% 
+  group_by(model) %>% 
+  pr_auc(data = ., truth = as.factor(Related.bool), M, na_rm = T)
+```
+
+ROC with plotroc
+```{r}
+x1 = .95
+x2 = .77
+yy = .17
+p.expand <- rep(0.01, 2)
+
+# auROC
+control.auROC <-
+  c.d1 %>% 
+  ggplot(aes(m = M, d = as.numeric(Related.bool), color = model)) + 
+  geom_roc(n.cuts = 0, 
+           labels = F) +
+  theme_cowplot() +
+  coord_fixed() + 
+  scale_color_manual(values = colors.discrete) + 
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand) + 
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand, sec.axis = dup_axis()) + 
+  geom_abline(slope = 1, linetype = 'dashed') + 
+  labs(x = 'False Positive', y = 'True Positive') +
+  theme(legend.position = 'none',
+        axis.line.y.right = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        axis.text.y.right = element_blank(),
+        axis.title.y.left = element_blank()
+        # axis.text.x = element_blank(), 
+        # axis.ticks.x = element_blank(),
+        # axis.line.x = element_blank()
+        )
+
+control.auROC.values <- calc_auc(control.auROC)$AUC
+control.auPR.values <- c.d3$.estimate
+
+control.auROC.table <-
+  control.auROC + 
+  theme(legend.justification = c(0, 1), legend.position = c(.35, .38), legend.title = element_blank()) +
+  annotate(geom = 'text', label = 'bold("auPR")', x = x1, y = .375, parse = T) +
+  annotate(geom = 'text', label = 'bold("auROC")', x = x2, y = .375, parse = T) +
+  annotate(geom = 'text', label = paste0(round(control.auROC.values, 3), collapse = '\n'),
+           x = x2, y = yy, parse = F) +
+  annotate(geom = 'text', label = paste0(round(control.auPR.values, 3), collapse = '\n'),
+           x = x1, y = yy, parse = F)
+
+
+# auPR (precision-recall plot)
+control.auPR <-
+  c.d2 %>% 
+  ggplot(aes(y = precision, x = recall, col = model)) + 
+  geom_line(size = 1) + 
+  coord_fixed() + 
+  theme_cowplot() +
+  scale_color_manual(values = colors.discrete) + 
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand) + 
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand, sec.axis = dup_axis()) + 
+  labs(x = 'Recall', y = 'Precision') + 
+  geom_abline(intercept = 1, slope = -1, linetype = 'dashed') + 
+  theme(legend.position = 'none',
+        axis.line.y.right = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        axis.text.y.right = element_blank(),
+        axis.title.y.left = element_blank())
+
+control.auROC
+control.auPR
+```
+
+#### Confusion Matrix
+Confusion Matrix using a conservative threshold, showing that the simple logistic regression classifier achieves ~90% accuracy for within-cases comparisons, almost 100% accuracy for distinct subjects (total FP = 2), and has most difficulty with assigning the the correct label to related pre/post-FMT samples and distinct individuals that were treated with stool from the same donor.
+```{r}
+# inspect false calls
+sstr.control.confusion <-
+  test %>% 
+  mutate(Predicted = pred.norm.strain > 8.713023e-08,
+         TP = Predicted & Related.bool,
+         FP = Predicted & !Related.bool,
+         FN = !Predicted & Related.bool,
+         TN = !Predicted & !Related.bool) %>% 
+  group_by(Pair_Type, Related.label, fmt_success) %>% 
+  summarize(TP = sum(TP, na.rm = T),
+            FP = sum(FP, na.rm = T),
+            FN = sum(FN, na.rm = T),
+            TN = sum(TN, na.rm = T),
+            .groups = 'drop') %>% 
+  mutate(Acc = (TP + TN) / (TP + TN + FP + FN)) 
+
+sstr.control.confusion
+```
+
+### Test on rCDI
+Predict using control-trained model on FMT sample pairs, including donor/post-FMT, recipient/post-FMT.
+```{r}
+# prediction
+sstr.rcdi$pred.norm.strain <- predict(fit.norm.strain, sstr.rcdi, type = 'response')
+sstr.rcdi$pred.norm.strain.all <- predict(fit.norm.strain.all, sstr.rcdi, type = 'response')
+sstr.rcdi$pred.norm.species <- predict(fit.norm.species, sstr.rcdi, type = 'response')
+sstr.rcdi$pred.norm.genus <- predict(fit.norm.genus, sstr.rcdi, type = 'response')
+sstr.rcdi$pred.norm.family <- predict(fit.norm.family, sstr.rcdi, type = 'response')
+
+sstr.rcdi.long <-
+  sstr.rcdi %>% 
+  pivot_longer(names_to = 'model', values_to = 'M', 
+         cols = c('pred.norm.strain',
+         # pred.norm.strain.all,
+         'pred.norm.species',
+         'pred.norm.genus',
+         'pred.norm.family'))
+```
+
+
+#### Performance
+PR curve
+```{r fig.width=3.5,fig.height=3.5}
+options(yardstick.event_first = FALSE)
+
+r.d1 <-
+  sstr.rcdi.long %>% 
+  mutate(model = gsub(model, pattern = 'pred.norm.', replacement = ''),
+         model = fct_relevel(model, 'family', 'genus', 'species', 'strain'))
+
+r.d2 <-
+  r.d1 %>% 
+  ungroup() %>% 
+  group_by(model) %>%
+  pr_curve(data = ., truth = as.factor(Related.bool), M)
+
+r.d3 <-
+  r.d1 %>% 
+  group_by(model) %>% 
+  pr_auc(data = ., truth = as.factor(Related.bool), M, na_rm = T)
+```
+
+ROC
+```{r}
+x1 = .95
+x2 = .77
+yy = .17
+p.expand <- rep(0.01, 2)
+
+# auROC
+rcdi.auROC <-
+  r.d1 %>% 
+  ggplot(aes(m = M, d = as.numeric(Related.bool), color = model)) + 
+  geom_roc(n.cuts = 0, labels = F) +
+  theme_cowplot() +
+  coord_fixed() + 
+  scale_color_manual(values = colors.discrete) + 
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand, sec.axis = dup_axis()) +
+  geom_abline(slope = 1, linetype = 'dashed') + 
+  labs(x = 'False Positive', y = 'True Positive') + 
+  theme(aspect.ratio = 1,
+        legend.position = 'none',
+        axis.line.y.right = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        axis.text.y.right = element_blank(),
+        axis.title.y.left = element_blank()
+        )
+
+rcdi.auROC.values <- calc_auc(rcdi.auROC)$AUC
+rcdi.auPR.values <- r.d3$.estimate
+
+# auPR (precision-recall plot)
+rcdi.auPR <-
+  r.d2 %>% 
+  ggplot(aes(y = precision, x = recall, col = model)) + 
+  geom_line(size = 1) + 
+  coord_fixed() + 
+  theme_cowplot() +
+  scale_color_manual(values = colors.discrete) + 
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1), expand = p.expand, sec.axis = dup_axis()) +
+  labs(x = 'Recall', y = 'Precision') + 
+  geom_abline(intercept = 1, slope = -1, linetype = 'dashed') + 
+  theme(aspect.ratio = 1,
+        legend.position = 'none',
+        axis.line.y.right = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        axis.text.y.right = element_blank(),
+        axis.title.y.left = element_blank()
+        )
+
+rcdi.auROC
+rcdi.auPR
+```
+
+#### Confusion Matrix
+Confusion Matrix using a conservative threshold, showing that the simple logistic regression classifier achieves ~90% accuracy for within-cases comparisons, almost 100% accuracy for distinct subjects (total FP = 2), and has most difficulty with assigning the the correct label to related pre/post-FMT samples and distinct individuals that were treated with stool from the same donor.
+```{r}
+# inspect false calls
+sstr.rcdi.confusion <-
+  sstr.rcdi %>% 
+  mutate(Predicted = pred.norm.strain > 0.001774427,
+         TP = Predicted & Related.bool,
+         FP = Predicted & !Related.bool,
+         FN = !Predicted & Related.bool,
+         TN = !Predicted & !Related.bool) %>% 
+  group_by(Pair_Type, Related.label, fmt_success) %>% 
+  summarize(TP = sum(TP, na.rm = T),
+            FP = sum(FP, na.rm = T),
+            FN = sum(FN, na.rm = T),
+            TN = sum(TN, na.rm = T),
+            .groups = 'drop') %>% 
+  mutate(Acc = (TP + TN) / (TP + TN + FP + FN)) 
+
+sstr.rcdi.confusion
+```
+
+Write to File
+```{r}
+sstr.rcdi.confusion %>%  
+  write_tsv(., paste0(results_dir, fig, 'ConfusionMatrix.rCDI.tsv'))
+```
+
+
+#### Scatter Plot
+```{r}
+r.d1 %>% 
+  ggplot(aes(n.shared_strains.mvs, n.shared_species)) + 
+  geom_point(aes(fill = Related.label), size = 2, shape = 21) + 
+  scale_fill_manual(values = colors.discrete) + 
+  theme_cowplot() + 
+  theme(legend.title = element_blank()) +
+  labs(x = 'Shared Strains [n]',
+       y = 'Shared Species [n]') 
+
+
+r.d1 %>% 
+  ggplot(aes(f.shared_strains.mvs, f.shared_species)) + 
+  geom_point(aes(fill = Related.label), size = 2, shape = 21) + 
+  geom_abline(slope = 1, intercept = 0, linetype = 'dashed') + 
+
+  scale_x_continuous(labels = percent_format(), limits = c(0, 1)) +
+  scale_y_continuous(labels = percent_format(), limits = c(0, 1)) +
+  theme_cowplot() + 
+  theme(aspect.ratio = 1, legend.title = element_blank()) + 
+  scale_fill_manual(values = colors.discrete) + 
+  labs(x = 'Shared Strains [%]',
+       y = 'Shared Species [%]')
+```
+
+### Model Summary
+
+Exporting Table
+```{r}
+model_comparison <- 
+  tibble(model = c('family', 'genus', 'species', 'strain'),
+         control.auROC = control.auROC.values, 
+         control.auPR = control.auPR.values, 
+         rcdi.auROC = rcdi.auROC.values, 
+         rcdi.auPR = rcdi.auPR.values, 
+         )
+
+output_name = 'RelatedSubject.ModelPerformance'
+sjPlot::tab_df(model_comparison, digits = 4,
+               alternate.rows = F,
+               file = paste0(results_dir, fig, output_name, '.doc'), 
+               title = 'Logistic Regression Model Performance')
+```
+
+Exporting Plots
+```{r}
+ww = 3.25
+hh = 3
+# legend
+legend = cowplot::get_legend(rcdi.auROC + theme(legend.position = 'left',
+                   legend.title = element_blank()))
+output_name = 'RelatedSubject'
+ggsave(legend, device = 'pdf', 
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'), 
+       dpi = 300, width = 1, height = .9)
+
+# control
+output_name = 'RelatedSubject.Control'
+ggsave(control.auROC, device = 'pdf', 
+       filename = paste0(results_dir, fig, output_name, '.auROC.pdf'), 
+       dpi = 300, width = ww, height = hh)
+
+ggsave(control.auPR, device = 'pdf', 
+       filename = paste0(results_dir, fig, output_name, '.auPR.pdf'), 
+       dpi = 300, width = ww, height = hh)
+
+# rcdi
+output_name = 'RelatedSubject.rCDI'
+ggsave(rcdi.auROC, device = 'pdf', 
+       filename = paste0(results_dir, fig, output_name, '.auROC.pdf'), 
+       dpi = 300, width = ww, height = hh)
+
+ggsave(rcdi.auPR, device = 'pdf', 
+       filename = paste0(results_dir, fig, output_name, '.auPR.pdf'), 
+       dpi = 300, width = ww, height = hh)
+```
+
+
+# Strain-level Source (Control)
+Strain-level plot of per-Case second time point rel. abund. by source
+
+## Format
+```{r}
+sstr_cases.control.long <- 
+  sstr_cases %>%
+  
+  filter(Study_Type == 'Control') %>% 
+
+  tag_species_competition(.) %>% 
+  
+  mutate(n = 1) %>% 
+  mutate(source = ifelse(grepl(species, pattern = 'unclassified'),  'Unclassified', source)) %>% 
+  
+    mutate(source = case_when(
+    analysis_level == 'species' & source == 'self' ~ 'Initial Sample Sp.',
+    analysis_level == 'species' & source == 'unique' ~ 'New Sp.',
+    T ~ source
+  )) %>% 
+  
+  group_by(Study_Type, Case_Name, source, Days_Since_FMT.post, fmt_success.label) %>% 
+  summarize(n = sum(n, na.rm = T),
+            rel_abund = sum(rel_abund.post, na.rm = T) / 100,
+            .groups = 'drop') %>% 
+  group_by(Case_Name, Days_Since_FMT.post) %>% 
+  mutate(f = n / sum(n, na.rm = T)) %>%
+  ungroup() %>% 
+  select(-n) %>% 
+
+  group_by(Case_Name) %>% 
+  mutate(source = case_when(source == 'Unclassified' ~ 'Unclassified Sp.',
+                  source == 'same_species' ~ 'Same Sp.', 
+                  source == 'unique' ~ 'New',
+                  source == 'self' ~ 'Initial Sample',
+                  T ~ source)) %>% 
+  
+  pivot_wider(names_from = 'source', 
+               values_from = c('rel_abund','f'), names_sep = '___') %>% 
+  mutate_at(.vars = vars(contains('___')),
+            .funs = funs(replace_na(., 0))) %>%
+  pivot_longer(cols = contains("___"), 
+               names_to = c("metric", "source"),
+               names_sep = '___', values_drop_na = F)
+```
+
+Statistics
+Retained (strain-level) from previous time point: 73.1 +- 18.3%
+```{r}
+sstr_cases.control.long  %>% 
+  filter(metric == 'rel_abund') %>% 
+  filter(Days_Since_FMT.post <= 373) %>% # ~ same time range as last rcdi
+  group_by(Study_Type, Case_Name) %>% 
+  filter(dense_rank(Days_Since_FMT.post) == max(dense_rank(Days_Since_FMT.post))) %>% 
+  ungroup() %>% 
+  group_by(Study_Type, source) %>% 
+  summarize(rel_abund.mean = mean(value, na.rm = T), 
+            rel_abund.sd = sd(value, na.rm = T),
+            .groups = 'drop') 
+
+sstr_cases.control.long  %>% 
+  filter(metric == 'f') %>% 
+  filter(Days_Since_FMT.post <= 373) %>% # ~ same time range as last rcdi
+  group_by(Study_Type, Case_Name) %>% 
+  filter(dense_rank(Days_Since_FMT.post) == max(dense_rank(Days_Since_FMT.post))) %>% 
+  ungroup() %>% 
+  group_by(Study_Type, source) %>% 
+  summarize(fraction.mean = mean(value, na.rm = T), 
+            fraction.sd = sd(value, na.rm = T),
+            .groups = 'drop')
+```
+
+## Bar Chart, per Case
+Control - Bar charts showing second time point rel. abund. of sets of co-occurring strains in first and second time points of controls.
+```{r fig.width=15}
+strain_order <- c('Initial Sample', 'Initial Sample Sp.', 'New', 'New Sp.', 'Same Sp.')
+strain_colors <- c(colors.discrete[c(8,3, 7,2, 10,5)])
+use_vars = list(strain_order, strain_colors)
+
+plot.control <-
+  sstr_cases.control.long  %>% 
+  filter(metric == 'rel_abund') %>% 
+  filter(Days_Since_FMT.post <= 373) %>% # ~ same time range as last rcdi
+  ungroup() %>% 
+  mutate(ordering = as.numeric(as.factor(Case_Name)) + (Days_Since_FMT.post/1000)) %>% 
+  ggplot(aes(
+    fct_reorder(paste0('D', Days_Since_FMT.post, ' | ', str_remove(Case_Name, pattern = 'Case_')), ordering),
+    y = value,
+    fill = fct_relevel(source, use_vars[[1]]))) + 
+
+  geom_bar(stat = 'identity', position = position_fill(), width = 1, col = 'black') +
+  theme_cowplot() + 
+  scale_y_continuous(labels = percent_format(),
+                     breaks = c(1, .75, .5, .25, 0),
+                     expand = c(0,0)) +
+  scale_fill_manual(values = strain_colors, 
+                    
+                    guide = guide_legend(reverse = TRUE)) + 
+  labs(y = 'Rel. Abund.') + 
+  theme(
+        axis.title.x = element_blank(),
+        axis.line.y = element_blank(),
+        axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5, size = 7.5),
+        legend.title=element_blank(),
+        legend.position = 'top') 
+plot.control
+```
+
+Exporting plots
+```{r}
+output_name = 'PostSource.Cases.Control.Strain'
+ggsave(plot.control + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 25, height = 3.5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+```
+
+## Area Chart, Across Cases
+Control - Area chart showing second time point rel. abund. of sets of co-occurring strains in first and second time points of controls based on glm 2nd binomial model across control cases
+```{r fig.width=2.5, fig.height=5, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+strain_order <- c('Initial Sample', 'Initial Sample Sp.', 'New', 'New Sp.', 'Same Sp.')
+strain_colors <- c(colors.discrete[c(8,3, 7,2, 10,5)])
+use_vars = list(strain_order, strain_colors)
+
+pseudo = 1e-6
+plot <-
+  
+  sstr_cases.control.long  %>% 
+  filter(Days_Since_FMT.post <= 373) %>% # ~ same time range as last rcdi
+
+  ggplot(aes(x = Days_Since_FMT.post, 
+             y = value, 
+             fill = fct_relevel(source, use_vars[[1]]))
+         ) +  
+  
+  stat_smooth(geom = 'area',
+              method = 'glm', colour = 'black', size = 0.25,
+              position = 'fill',
+              method.args=list(family='binomial')
+              ) +
+  
+   facet_grid(scales = 'free_x', space = 'free_x',
+   cols = vars(''),
+   rows = vars(ifelse(grepl(metric, pattern = '^f'), 
+                                'Spp. Fraction', 
+                                'Rel. Abund.'))) +
+  theme_cowplot() + 
+  scale_y_continuous(labels = percent_format(),
+                     breaks = c(1, .75, .5, .25, 0),
+                     expand = c(0,0), 
+                     ) +
+  scale_x_continuous(trans = pseudo_log_trans(0.5, 10), 
+                     breaks = c(pseudo, 7, 14, 35, 84, 365),
+                     expand = c(0,0)) + 
+  scale_fill_manual(values = use_vars[[2]], 
+                    guide = guide_legend(reverse = TRUE)) + 
+  # labs(x = 'Days Since\nInitial Sampling') + 
+  labs(x = 'Days between\nSample Collection') + 
+  theme(axis.title.y = element_blank(), 
+        plot.margin = unit(c(0, 0, 0, 0), "cm"), 
+        strip.background = element_blank(), 
+        strip.text = element_text(size = 14), 
+        panel.spacing.y = unit(.5, "cm"),
+        panel.spacing.x = unit(.35, "cm"),
+        legend.title=element_blank(),
+        legend.margin=ggplot2::margin(l = 0.1, unit='cm'))
+
+
+plot + theme(legend.position = 'none')
+legend <- cowplot::get_legend(plot)
+
+grid.newpage()
+grid.draw(legend)
+```
+
+Histogram of available samples for modelling
+```{r fig.width=5, fig.height=2, message=FALSE, warning=FALSE, paged.print=FALSE}
+plot.histogram <-
+  sstr_cases.control.long %>% 
+  filter(metric == 'f') %>% 
+  group_by(Study_Type, Case_Name, Days_Since_FMT.post) %>% 
+  summarize(value = sum(value, na.rm = T)) %>% 
+  ggplot(aes(Days_Since_FMT.post)) + 
+  geom_histogram(fill = 'black', bins = 10) +
+  facet_grid(scales = 'free_x', space = 'free_x', 
+   cols = vars(fct_relevel(Study_Type, 'rCDI', 'Control')),
+   rows = vars('n')) +
+  scale_x_continuous(trans = pseudo_log_trans(0.5, 10), 
+                     breaks = c(pseudo, 7, 14, 30, 90, 365),
+                     expand = c(0,0)) + 
+  scale_y_continuous(breaks = c(0, 12, 25), 
+                     expand = c(0,0),
+                     ) +
+  theme_cowplot() + 
+  theme(strip.background = element_blank(), 
+        strip.text.x = element_blank(), 
+        axis.title = element_blank(), 
+        axis.line.x = element_line(size = 1),
+        axis.line.y = element_blank(), 
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.title=element_blank())
+
+plot.histogram
+legend = cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+Exporting plot
+```{r}
+output_name = 'PostSource.AcrossCases.Control.Strain'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 3, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(plot.histogram + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 3, height = .6,
+       filename = paste0(results_dir, fig, output_name, '.Histogram','.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 5, height = 2,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+## Strain-level Resolution
+Format
+```{r}
+resolution <- 
+  sstr_cases %>%
+  
+  filter(Study_Type == 'Control') %>% 
+  
+  tag_species_competition(.) %>% 
+  
+  mutate(n = 1) %>% 
+  mutate(source = ifelse(grepl(species, pattern = 'unclassified'),  'Unclassified', source)) %>% 
+  
+    mutate(source = case_when(
+    analysis_level == 'species' & source == 'self' ~ 'Initial Sample Sp.',
+    analysis_level == 'species' & source == 'unique' ~ 'New Sp.',
+    T ~ source
+  )) %>% 
+  
+  group_by(Study_Type, Case_Name, source, Days_Since_FMT.post, fmt_success.label) %>% 
+  summarize(n = sum(n, na.rm = T),
+            rel_abund = sum(rel_abund.post, na.rm = T) / 100,
+            .groups = 'drop') %>% 
+  group_by(Case_Name, Days_Since_FMT.post) %>% 
+  mutate(f = n / sum(n, na.rm = T)) %>%
+  ungroup() %>% 
+  select(-n) %>% 
+
+  group_by(Case_Name) %>% 
+  mutate(source = case_when(source == 'Unclassified' ~ 'Unclassified Sp.',
+                  source == 'same_species' ~ 'Same Sp.', 
+                  source == 'unique' ~ 'New',
+                  source == 'self' ~ 'Initial Sample',
+                  T ~ source)) %>% 
+  
+  pivot_wider(names_from = 'source', 
+               values_from = c('rel_abund','f'), names_sep = '___') %>% 
+  mutate_at(.vars = vars(contains('___')),
+            .funs = funs(replace_na(., 0))) %>%
+  pivot_longer(cols = contains("___"), 
+               names_to = c("metric", "source"),
+               names_sep = '___', values_drop_na = F) %>% 
+  mutate(resolution = case_when(
+    grepl(source, pattern = 'Sp.') ~ 'Species',
+    T ~ 'Strain'
+  )) %>% 
+  mutate(metric = case_when(
+    metric == 'rel_abund' ~ 'Rel.\nAbund.', 
+    metric == 'f' ~ 'Spp.\nFraction', 
+    T ~ metric
+  )) %>% 
+  group_by(Case_Name, Days_Since_FMT.post, metric, resolution) %>% 
+  summarize(value = sum(value, na.rm = T), .groups = 'drop')
+```
+
+Relative abundance and fraction of species, on average, for which we obtained strain-level resolution
+```{r}
+resolution %>% 
+  filter(resolution == 'Strain') %>% 
+  group_by(metric) %>% 
+  summarize(value.mean = mean(value, na.rm = T), 
+            value.sd = sd(value, na.rm = T), .groups = 'drop') 
+```
+
+Boxplots
+```{r fig.height=5, fig.width=2.5}
+plot.resolution <- 
+  resolution %>% 
+  filter(resolution == 'Strain') %>% 
+  
+  ggplot(aes(metric, value)) + 
+  stat_boxplot(geom = 'errorbar') +
+  geom_boxplot(show.legend = F) + 
+  geom_dotplot(aes(fill = NULL), binaxis = "y", 
+               stackdir = "center", binpositions="all", binwidth = 0.015) +
+  
+  scale_y_continuous(labels = percent_format(),
+                     breaks = seq(0, 1, .25),
+                     expand = c(0,0),
+                     limits = c(0, 1)
+                     ) + 
+  theme_cowplot() +
+  theme(legend.position = 'none', # c(.6, .65),
+        legend.title = element_blank(),
+        plot.subtitle = element_text(hjust = 0.5),
+        axis.title = element_blank(),
+        ) + 
+  labs(subtitle = 'Strain-level Resolution')
+plot.resolution
+```
+
+Exporting plot
+```{r}
+output_name = 'PostSource.Control.Strain'
+
+ggsave(plot.resolution, 
+       device = 'pdf', dpi = 300, width = 2.25, height = 3.75,
+       filename = paste0(results_dir, 'Fig_3.', output_name, '.ResolutionPlot.pdf'))
+```
+
+# Shared Strains (rCDI)
+
+## Family Related
+```{r fig.width=2.5,fig.height=4}
+plot <-
+  sstr.rcdi %>% 
+  filter(Pair_Type == 'Pre-FMT/Donor') %>%
+  mutate(tag.facet = case_when(
+    Related.label == 'Same Subject' ~ 'Same Individual', 
+    Related.label == 'Same Donor' & Pair_Type == 'Donor/Donor' ~ 'Same Individual',
+    Related.label == 'Same Case' & Pair_Type != 'Donor/Post-FMT' ~ 'Same Individual',
+    Related.label == 'Same Donor' & Pair_Type == 'Post-FMT/Post-FMT' ~ 'Treatment-related',
+    Related.label %in% c('Same Donor', 'Same Case') & Pair_Type == 'Donor/Post-FMT' ~ 'Treatment-related',
+    T ~ Related.label),
+    tag.x = 
+           case_when(Related.label == 'Distinct Subject' ~ 'Unrelated\nSample Pair', 
+                     T ~ gsub(Pair_Type, pattern = '/', replacement= '\n'))) %>% 
+  
+  mutate(tag.x = case_when(Pair_Type == 'Pre-FMT/Donor' & Study.pair == 'FRICKE' ~
+                             'Family-related\nPre-FMT/Donor',
+                           T ~ tag.x),
+         tag.x = case_when(Related.label == 'Same Donor' ~ paste0(gsub(tag.x, pattern = '\n', replacement ='*\n'), '*'),
+    T ~ tag.x),
+ tag.x = fct_relevel(as.factor(gsub(tag.x, pattern = '-FMT', replacement = '')), 
+                     'Pre\nPost', 'Donor\nPost')) %>% 
+  ggplot(aes(tag.x, n.shared_strains.mvs, fill = tag.facet)) + 
+  stat_boxplot(geom = 'errorbar') +
+  geom_boxplot() + 
+  stat_compare_means(method = 'wilcox', label.x.npc = 0.5,
+                     exact = F, label = 'p.signif'
+                     ) +
+  
+  facet_grid(cols = vars(tag.facet),  
+             scales = 'free', space = 'free_x') + 
+  scale_fill_manual(values = c('black', 'grey75','white')) +
+  theme_cowplot() + 
+  guides(color = guide_legend(ncol = 1), 
+         linetype = guide_legend(ncol = 1)) + 
+  theme(legend.title=element_blank(),
+        axis.title.x = element_blank(),
+        panel.margin.y = unit(.5, "lines"),
+        panel.background = element_blank(),
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text = element_text(size = 9),
+        axis.title = element_text(size = 11), 
+        axis.text.x = element_text(hjust = 0.5),
+        text = element_text(colour = 'black'),
+        ) + 
+  labs(y = 'Strains Shared between Samples')
+
+plot + theme(legend.position = 'none')
+
+legend = cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+
+## FMT Related
+
+```{r fig.width=5,fig.height=2.85}
+plot <-
+  sstr.rcdi %>% 
+  
+  mutate(tag.facet = case_when(
+    Related.label == 'Same Subject' ~ 'Same Individual', 
+    Related.label == 'Same Donor' & Pair_Type == 'Donor/Donor' ~ 'Same Individual',
+    Related.label == 'Same Case' & Pair_Type != 'Donor/Post-FMT' ~ 'Same Individual',
+    Related.label == 'Same Donor' & Pair_Type == 'Post-FMT/Post-FMT' ~ 'Same Donor',
+    Related.label %in% c('Same Donor', 'Same Case') & Pair_Type == 'Donor/Post-FMT' ~ 'Same Donor',
+    Related.label == 'Distinct Subject' ~ 'Different Individuals',
+    T ~ 'Unknown'),
+    tag.x = gsub(Pair_Type, pattern = '/', replacement = '\n'),
+    tag.x = gsub(tag.x, pattern = '-FMT', replacement = ''),
+    tag.x = ifelse(tag.x == 'Pre\nDonor', 'Donor\nPre', tag.x),
+    tag.x = fct_relevel(tag.x,  
+                     'Pre\nPre', 'Pre\nPost', 'Post\nPost', 
+                     'Donor\nDonor', 'Donor\nPre', 'Donor\nPost')) %>% 
+  mutate(tag.facet = fct_relevel(tag.facet, 'Same Individual', 'Same Donor')) %>% 
+  mutate(tag.f = ifelse(grepl(tag.x, pattern = 'Donor'),  'Donor-Related', 'Patient-Related'),
+         tag.f = fct_relevel(tag.f, 'Patient-Related')) %>% 
+  filter(!(tag.facet == 'Different Individuals' & tag.x %in% c('Pre\nPost', 'Donor\nPre', 'Donor\nPost'))) %>% 
+  
+  ggplot(aes(tag.x, n.shared_strains.mvs, fill = tag.facet)) + 
+  stat_boxplot(geom = 'errorbar') +
+  geom_boxplot() + 
+  
+  facet_grid(cols = vars(tag.facet),
+            scales = 'free', space = 'free_x') +
+  scale_fill_manual(values = c('white', 'grey75','black')) +
+  theme_cowplot() + 
+  guides(color = guide_legend(ncol = 1), 
+         linetype = guide_legend(ncol = 1)) + 
+  theme(legend.title=element_blank(),
+        axis.title.x = element_blank(),
+        panel.margin.y = unit(.5, "lines"),
+        panel.background = element_blank(),
+        strip.background = element_blank(), 
+        strip.text = element_blank(),
+        axis.text = element_text(size = 9),
+        axis.title = element_text(size = 11), 
+        axis.text.x = element_text(hjust = 0.5),
+        text = element_text(colour = 'black'),
+        ) + 
+  labs(y = 'Strains Shared between Samples')
+ 
+plot + theme(legend.position = 'none')
+
+legend = cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+Exporting plot
+```{r}
+output_name = 'SharedStrains.rCDI'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 4.75, height = 3.05,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 2, height = 1,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+```
+
+Statistics
+```{r}
+output_name = 'SharedStrains.rCDI'
+sstr.rcdi %>% 
+  mutate(fmt_success.label = ifelse(fmt_success, 'Resolved', 'Failed')) %>% 
+  filter(Same_Case.label == 'Same Case') %>% 
+  select(Study.pair, Case_Name.pair, Pair_Type, fmt_success.label, starts_with('n.shared'), starts_with('Days_Since_FMT')) %>% 
+  filter(Pair_Type %in% c('Pre-FMT/Post-FMT', 'Donor/Post-FMT')) %>% 
+  rowwise() %>% 
+  mutate(Days_Since_FMT = max(c(Days_Since_FMT.row, Days_Since_FMT.col))) %>% 
+  ungroup() %>% 
+  group_by(Case_Name.pair) %>% 
+  filter(dense_rank(Days_Since_FMT) == max(dense_rank(Days_Since_FMT))) %>% 
+  ungroup() %>% 
+  select(-Days_Since_FMT.row, -Days_Since_FMT.col, -n.shared_strains.cvs, -n.shared_genus, -n.shared_family) %>% 
+  pivot_wider(names_from = 'Pair_Type', values_from = starts_with('n.shared'), 
+              id_cols = c('Days_Since_FMT', 'Study.pair', 'Case_Name.pair', 'fmt_success.label')) %>% 
+  select(Study.pair, Case_Name.pair, fmt_success.label, Days_Since_FMT, starts_with('n.shared_strains'), starts_with('n.shared_species')) %>% 
+  write_tsv(., paste0(results_dir, fig, output_name, '.Counts.tsv'))
+```
+
+# Labelling Control
+
+## Format
+```{r}
+library(tidygraph)
+library(ggraph)
+```
+
+```{r}
+sstr_cooccurrence <- read_tsv(file = paste0(data_dir, 'samples.sstr_cooccurrence.tsv'))
+```
+
+## Set Figure
+```{r}
+fig = paste0('Suppl.Fig_6.')
+```
+
+```{r}
+get_matrix <- function(data, selection, min_strain=3) {
+  
+  sstr_select <-
+  data %>%
+  filter(row %in% selection,
+         col %in% selection)
+  
+  sstr_matrix <-
+  bind_rows(sstr_select, 
+            sstr_select %>% rename(row = col, col = row)) %>% 
+  pivot_wider(names_from = col, 
+              values_from = n.shared_strain,
+              values_fill = list(n.shared_strain = 0)) %>% 
+  column_to_rownames('row')
+
+  idx <- intersect(rownames(sstr_matrix), colnames(sstr_matrix))
+  sstr_matrix <- sstr_matrix[idx, idx]
+  sstr_matrix[as.matrix(sstr_matrix) <= min_strain] <- 0
+  
+  return(sstr_matrix)
+}
+
+get_graph <- function(sstr_matrix) {
+  sstr_graph <- 
+    as_tbl_graph(as.matrix(sstr_matrix), directed = F) %>% 
+    activate(nodes) %>%
+    left_join(., samples.metadata, by = c('name' = 'Name'))
+  return(sstr_graph)
+}
+
+generate_graph <- function(data, selection, min_strain=3) {
+  return(get_graph(get_matrix(data, selection, min_strain=3)))
+}
+```
+
+
+## LOUISS
+LOUISS Case 64 / 66 last time point mislabelling
+
+```{r}
+selection <- 
+  samples.metadata %>% 
+  filter(Case_Name %in% c('LOUISS_Case_64', 'LOUISS_Case_66')) %>% 
+  pull(Name)
+
+misl1 <- 
+  get_matrix(sstr_cooccurrence, selection, 0) %>% 
+  rownames_to_column('row') %>% 
+  pivot_longer(names_to = 'col', values_to = 'shared',
+               cols = ends_with('.pair')) %>% 
+  filter(row != col) %>% 
+  separate(row, into = c('Study.row','Case_Name.row','Time_point.row'), sep = '_', remove = F) %>% 
+  separate(col, into = c('Study.col','Case_Name.col','Time_point.col'), sep = '_', remove = F) %>% 
+  filter(!col %in% c('LOUISS_AS64_24.pair','LOUISS_AS66_24.pair')) %>% 
+  mutate(Same = Case_Name.col == Case_Name.row,
+         Name = str_remove(row, pattern = '.pair')) %>% 
+  select(Name, shared, Same) %>% 
+  group_by(Name, Same) %>% 
+  summarize_all(.funs = funs(mean, sd)) %>% 
+  mutate(Same = ifelse(Same, 'Original Case', 'Other Case')) %>% 
+  pivot_wider(names_from = 'Same', names_sep = '.',
+              values_from = c('mean','sd')) %>% 
+  select(Name, contains('Original'), everything()) %>% 
+  separate(Name, into = c('Study','Case Name','Time point')) %>% 
+  arrange(`Case Name`, as.numeric(`Time point`)) %>% 
+  mutate_at(.vars = vars(starts_with('mean'), starts_with('sd')),
+            .funs = funs(round(., 2)))
+```
+
+Denoising up to 3 shared strains, showing all connections above 3 strains
+```{r fig.width=8, fig.height=5}
+selection <- samples.metadata %>% 
+  filter(grepl(Study, pattern = 'LOUISS')) %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+yy = -.6
+c.col = get_palette(c('black','white'), 15)
+
+plot <- 
+  ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 3, alpha = weight)
+                 ) +
+  geom_node_point(shape = 21, col = 'black',size = 5, 
+                  aes(fill = str_remove(Case_Name, pattern = 'LOUISS_Case_')),
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('LOUISS_AS66_24.pair', 'LOUISS_AS64_24.pair')), 
+                 repel = T, hjust = .25, vjust = -3) +
+
+  scale_y_continuous(expand = c(0.6, 0.6)) +
+  scale_x_reverse(expand = c(0.1, 0.1)) +
+  theme_graph() +
+  theme(legend.position = 'none', 
+        strip.background = element_blank(),
+        panel.spacing.y = unit(0, 'cm'),
+        strip.placement = 'inside',
+        strip.text = element_blank()
+        ) + 
+  guides(edge_alpha = F, 
+         fill = guide_legend(override.aes=list(shape=21), title = '', 
+                             nrow = 2)) + 
+  scale_edge_alpha_continuous(breaks = c(5, 10, 25, 50)) +
+  scale_fill_manual(values = c(
+    # 43
+    c.col[1],
+    # 44
+    c.col[5],
+    # 45
+    c.col[2],
+    # 50
+    c.col[6],
+    # 51
+    c.col[7],
+    # 53
+    c.col[8],
+    # 56
+    c.col[9],
+    # 58
+    c.col[10],
+    # 60
+    c.col[11],
+    # 61
+    c.col[3],
+    # 62
+    c.col[12],
+    # 63
+    c.col[13],
+    # 64
+    colors.discrete[4],
+    # 65
+    c.col[14],
+    # 66
+    '#B4907E',
+    # 68
+    c.col[4]
+  )) + 
+
+  annotate('text', x = .6, y = yy, label = '43') + 
+  annotate('text', x = 2.75, y = yy, label = '45') + 
+  annotate('text', x = 4.75, y = yy, label = '61') + 
+  annotate('text', x = 7, y = yy, label = '68') + 
+  annotate('text', x = 9.5, y = yy, label = '44') + 
+  annotate('text', x = 11.75, y = yy, label = '50') + 
+  annotate('text', x = 13.75, y = yy, label = '51') + 
+  annotate('text', x = 16.25, y = yy, label = '53') + 
+  annotate('text', x = 18.35, y = yy, label = '56') + 
+  
+  annotate('text', x = 20.6, y = yy, label = '58') + 
+  annotate('text', x = 23, y = yy, label = '60') + 
+  annotate('text', x = 25.25, y = yy, label = '62') + 
+  annotate('text', x = 27.5, y = yy, label = '63') + 
+  annotate('text', x = 29.75, y = yy, label = '64') + 
+  annotate('text', x = 32, y = yy, label = '66') + 
+  annotate('text', x = 34.25, y = yy, label = '65') + 
+  
+  facet_wrap(~ x < 20, scales = 'free', nrow = 2)
+plot
+```
+
+Exporting plot
+```{r}
+output_name = 'Mislabelling.Example1'
+
+ggsave(plot, 
+       device = 'pdf', dpi = 300, width = 8, height = 5,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+misl1 %>% 
+  write_tsv(., paste0(results_dir, fig, output_name, '.tsv'))
+```
+
+## ALM
+ALM patient sample with many Donor strains BEFORE FMT labelled as recipient / pre-FMT
+Collected on day of FMT - As per C. Smillie not clear if before or after from notes
+```{r}
+selection <- samples.metadata %>% 
+  filter(Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21') %>% 
+  pull(Name)
+
+
+samples.metadata.orig <-
+  samples.metadata %>% 
+  select(Name, Case_Name, Sample_Type) %>% 
+  mutate(Sample_Type = ifelse(Name == 'ALM_FMT15.pair', 'recipient', Sample_Type))
+
+misl2 <- 
+  get_matrix(sstr_cooccurrence, selection, 0) %>% 
+  rownames_to_column('row') %>% 
+  pivot_longer(names_to = 'col', values_to = 'shared',
+               cols = ends_with('.pair')) %>% 
+  filter(row != col) %>% 
+  
+  left_join(., samples.metadata.orig, by = c('row' = 'Name')) %>% 
+  left_join(., samples.metadata.orig, by = c('col' = 'Name'),
+            suffix = c('.row','.col')) %>% 
+  
+  filter(Sample_Type.row == 'recipient', Sample_Type.col != 'recipient') %>% 
+  mutate(Same = case_when(
+    Sample_Type.col == 'post' & Case_Name.col == Case_Name.row ~ 'Self Post-FMT',
+    Sample_Type.col == 'post' & Case_Name.col != Case_Name.row ~ 'Other Post-FMT',
+    Sample_Type.col == 'donor' ~ 'Donor',
+  )) %>% 
+  
+  mutate(Recipient = str_remove(row, pattern = '.pair'),
+         Study = 'ALM') %>% 
+  rename(Case_Name = 'Case_Name.row') %>% 
+  select(Study, Case_Name, Recipient, shared, Same) %>% 
+  group_by(Study, Case_Name, Recipient, Same) %>% 
+  summarize_all(.funs = funs(mean, sd)) %>% 
+
+  pivot_wider(names_from = 'Same', names_sep = '.',
+              values_from = c('mean','sd')) %>% 
+  select(Study, Case_Name, Recipient, contains('Self'), contains('Other'), everything()) %>% 
+  
+  mutate_at(.vars = vars(starts_with('mean'), starts_with('sd')),
+            .funs = funs(replace_na(round(., 2), 0))) %>% 
+  mutate_at(.vars = vars(Case_Name, Recipient),
+            .funs = funs(str_remove(., 'ALM_'))) %>% 
+  arrange(Recipient)
+```
+
+
+
+
+Denoising below 3 shared strains, showing all connections >4 strains
+```{r fig.width=11, fig.height=8}
+selection <- samples.metadata %>% 
+  filter(Donor.Subject == 'D0_ALM_Case_4;5;6;8;9;12;13;15;17;18;20;21') %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+plot <-
+  ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 5, alpha = weight)) +
+  geom_node_point(shape = 21, col = 'black',size = 8, 
+                  aes(fill = case_when(
+                    Days_Since_FMT == 0.5 ~ 'Recipient', 
+                    Sample_Type == 'post' ~ 'Post-FMT', 
+                    Sample_Type == 'donor' ~ 'Donor', 
+                    Sample_Type == 'recipient' ~ 'Recipient', 
+                    T ~ '?'
+                  ))) + 
+  geom_node_text(size = 3, 
+                  aes(label = ifelse(Sample_Type == 'donor', 'D', Case_Number),
+                      col = ifelse(Sample_Type == 'recipient' | name == 'ALM_FMT15.pair', 'R', 'DP')),
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('ALM_FMT15.pair')), 
+                 repel = T, hjust = .75, vjust = -8) +
+  scale_y_continuous(expand = c(0.25, 0)) + 
+  theme_graph(base_family = 'Helvetica') + 
+  # theme(legend.key.width = unit(1, 'cm'),
+        # legend.key.height = unit(0.5, 'cm')) + 
+  scale_fill_manual(values = colors.discrete[c(1,2,3)]) + 
+  scale_edge_alpha_continuous(breaks = c(5, 10, 25, 50)) +
+  scale_color_manual(values = c('black', 'white')) + 
+  guides(edge_alpha = guide_legend(title = 'Shared\nStrains',
+                                   override.aes = list(size = 5)), 
+         col = F, 
+         fill = F)
+plot + theme(legend.position = 'none')
+legend = cowplot::get_legend(plot)
+grid.newpage()
+grid.draw(legend)
+```
+
+Exporting plot
+```{r}
+output_name = 'Mislabelling.Example2'
+
+ggsave(plot + theme(legend.position = 'none'), 
+       device = 'pdf', dpi = 300, width = 11, height = 8,
+       filename = paste0(results_dir, fig, output_name, '.Plot.pdf'))
+ggsave(legend, 
+       device = 'pdf', dpi = 300, width = 1, height = 1.5,
+       filename = paste0(results_dir, fig, output_name, '.Legend.pdf'))
+
+misl2 %>% 
+  write_tsv(., paste0(results_dir, fig, output_name, '.tsv'))
+```
+
+```{r fig.width=4, fig.height=3}
+selection <- samples.metadata %>% 
+  filter(Donor.Subject == 'D0_ALM_Case_22;23;24;25') %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 3, alpha = weight)) +
+  geom_node_point(shape = 21, col = 'black',size = 8, 
+                  aes(fill = case_when(
+                    Days_Since_FMT == 0.5 ~ 'Recipient', 
+                    Sample_Type == 'post' ~ 'Post-FMT', 
+                    Sample_Type == 'donor' ~ 'Donor', 
+                    Sample_Type == 'recipient' ~ 'Recipient', 
+                    T ~ '?'
+                  ))) + 
+  geom_node_text(col = 'black',size = 3.5, 
+                  aes(label = ifelse(Sample_Type == 'donor', 'D', Case_Number))
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('ALM_FMT15.pair')), 
+                 repel = T, hjust = .75, vjust = -3) +
+  scale_y_continuous(expand = c(0.25, 0)) + 
+  scale_x_continuous(expand = c(0.25, 0.25)) + 
+  
+  theme_graph() + 
+  guides(edge_alpha = F, 
+         fill = guide_legend(override.aes = list(shape=21), 
+                             title = 'Smillie et al.\noriginal label', ncol = 1))
+```
+
+
+```{r fig.width=4, fig.height=3}
+selection <- samples.metadata %>% 
+  filter(Donor.Subject == 'D0_ALM_Case_1;3') %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 3, alpha = weight)) +
+  geom_node_point(shape = 21, col = 'black',size = 8, 
+                  aes(fill = case_when(
+                    Days_Since_FMT == 0.5 ~ 'Recipient', 
+                    Sample_Type == 'post' ~ 'Post-FMT', 
+                    Sample_Type == 'donor' ~ 'Donor', 
+                    Sample_Type == 'recipient' ~ 'Recipient', 
+                    T ~ '?'
+                  ))) + 
+  geom_node_text(col = 'black',size = 3.5, 
+                  aes(label = ifelse(Sample_Type == 'donor', 'D', Case_Number))
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('ALM_FMT15.pair')), 
+                 repel = T, hjust = .75, vjust = -5) +
+  scale_y_continuous(expand = c(0.25, 0)) + 
+  scale_x_continuous(expand = c(0.25, 0.25)) +  
+  theme_graph() + 
+  guides(edge_alpha = F, 
+         fill = guide_legend(override.aes = list(shape=21), 
+                             title = 'Smillie et al.\noriginal label', ncol = 1))
+```
+
+## FRICKE
+```{r fig.width=10, fig.height=2}
+selection <- samples.metadata %>% 
+  filter(Study == 'FRICKE') %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 3, alpha = weight)) +
+  geom_node_point(shape = 21, col = 'black',size = 8, 
+                  aes(fill = case_when(
+                    Days_Since_FMT == 0.5 ~ 'Recipient', 
+                    Sample_Type == 'post' ~ 'Post-FMT', 
+                    Sample_Type == 'donor' ~ 'Donor', 
+                    Sample_Type == 'recipient' ~ 'Recipient', 
+                    T ~ '?'
+                  ))) + 
+  geom_node_text(col = 'black',size = 3.5, 
+                  aes(label = Case_Number)
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('ALM_FMT15.pair')), 
+                 repel = T, hjust = .75, vjust = -5) +
+  scale_y_continuous(expand = c(0.25, 0)) + 
+  
+  theme_graph() + 
+  guides(edge_alpha = F, 
+         fill = guide_legend(override.aes = list(shape=21), 
+                             title = 'Sample Type', ncol = 1))
+```
+
+
+## RAYMONDF
+```{r fig.width=10, fig.height=2}
+selection <- samples.metadata %>% 
+  filter(Study == 'RAYMONDF') %>% 
+  pull(Name)
+
+sstr_graph <- generate_graph(sstr_cooccurrence, selection, 3)
+
+ggraph(sstr_graph, layout = 'stress') +
+  geom_edge_link(aes(filter = weight >= 3, alpha = weight)) +
+  geom_node_point(shape = 21, col = 'black',size = 8, 
+                  aes(fill = Days_Since_FMT)) + 
+  geom_node_text(col = 'black',size = 3.5, 
+                  aes(label = Case_Number)
+                  ) + 
+  geom_node_label(aes(label = Sample, 
+                    filter = name %in% c('ALM_FMT15.pair')), 
+                 repel = T, hjust = .75, vjust = -5) +
+  scale_y_continuous(expand = c(0.25, 0)) + 
+  
+  theme_graph() + 
+  guides(edge_alpha = F, 
+         fill = guide_legend(override.aes = list(shape=21), 
+                             title = 'Sampling Day', ncol = 1))
+```
